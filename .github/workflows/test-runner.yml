@@ -1,0 +1,11 @@
+name: Test Self-Hosted Runner
+
+on:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: self-hosted
+    steps:
+      - name: Print message
+        run: echo "Runner is working on $(hostname)"
