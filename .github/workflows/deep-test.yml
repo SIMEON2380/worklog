@@ -1,0 +1,31 @@
+name: Deep Test of Self-Hosted Runner
+
+on:
+  workflow_dispatch:
+
+jobs:
+  deep-test:
+    runs-on: self-hosted
+    steps:
+      - name: Show hostname
+        run: hostname
+
+      - name: Show OS info
+        run: uname -a
+
+      - name: Show disk space
+        run: df -h
+
+      - name: List home directory
+        run: ls -la ~
+
+      - name: Run a multi-step script
+        run: |
+          echo "Starting script..."
+          sleep 2
+          echo "Halfway..."
+          sleep 2
+          echo "Script finished!"
+
+      - name: Confirm runner identity
+        run: echo "Runner test completed on $(hostname)"
