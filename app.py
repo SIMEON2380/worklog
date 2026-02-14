@@ -198,10 +198,22 @@ with st.sidebar:
         min_d = date.today()
         max_d = date.today()
     else:
-        min_d = df_all["work_date"].min() if df_all["work_date"].notna().any() else date.today()
-        max_d = df_all["work_date"].max() if df_all["work_date"].notna().any() else date.today()
+          # Make work_date consistent (bad values -> NaT)
+        df_all["work_date"] = pd.to_datetime(df_all["work_date"], errors="coerce")
 
-    date_range = st.date_input("Date range", value=(min_d, max_d))
+        if df_all["work_date"].notna().any():
+            min_d = df_all["work_date"].min().date()
+            max_d = df_all["work_date"].max().date()
+        else:
+            min_d = date.today()
+            max_d = date.today()
+
+    date_range = st.date_input(
+        "Date range",
+        value=(min_d, max_d),
+        min_value=min_d,
+        max_value=max_d,
+    )
     status = st.multiselect("Job Status", sorted([x for x in df_all["job_status"].dropna().unique()]) if not df_all.empty else [])
     job_type = st.multiselect("Job Type", sorted([x for x in df_all["job_type"].dropna().unique()]) if not df_all.empty else [])
     search = st.text_input("Search (job #, reg, places, comments)")
