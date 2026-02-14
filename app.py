@@ -1,7 +1,7 @@
 import os
 import re
 import sqlite3
-from datetime import date, datetime, timedelta
+from datetime import date, timedelta
 from typing import Optional, Tuple
 
 import pandas as pd
@@ -15,9 +15,7 @@ DB_DIR = "/var/lib/worklog"
 DB_PATH = os.path.join(DB_DIR, "worklog.db")
 
 TABLE_NAME = "work_logs"
-
 WAITING_RATE = 7.50
-
 STATUS_OPTIONS = ["Start", "Completed", "Aborted", "Paid", "Pending", "Withdraw"]
 
 
@@ -35,7 +33,6 @@ def get_conn():
 
 def table_columns(conn: sqlite3.Connection, table_name: str) -> set:
     rows = conn.execute(f"PRAGMA table_info({table_name})").fetchall()
-    # PRAGMA table_info returns: cid, name, type, notnull, dflt_value, pk
     return {r[1] for r in rows}
 
 
@@ -68,8 +65,12 @@ def ensure_schema():
 
         cols = table_columns(conn, TABLE_NAME)
 
-        # Migrations for older DBs
         migrations = [
+            ("description", "TEXT"),
+            ("hours", "REAL"),
+            ("amount", "REAL"),
+            ("job_id", "TEXT"),
+            ("category", "TEXT"),
             ("job_status", "TEXT"),
             ("waiting_time", "TEXT"),
             ("waiting_hours", "REAL"),
@@ -81,7 +82,6 @@ def ensure_schema():
                 conn.execute(f"ALTER TABLE {TABLE_NAME} ADD COLUMN {col} {col_type}")
         conn.commit()
 
-        # Indexes
         conn.execute(f"CREATE INDEX IF NOT EXISTS idx_{TABLE_NAME}_work_date ON {TABLE_NAME}(work_date)")
         conn.execute(f"CREATE INDEX IF NOT EXISTS idx_{TABLE_NAME}_job_id ON {TABLE_NAME}(job_id)")
         conn.execute(f"CREATE INDEX IF NOT EXISTS idx_{TABLE_NAME}_status ON {TABLE_NAME}(job_status)")
@@ -89,17 +89,12 @@ def ensure_schema():
 
 
 # =========================
-# Date + parsing utilities
+# Parsing utilities
 # =========================
 def to_clean_date_series(s: pd.Series) -> pd.Series:
     """
-    Convert a messy 'work_date' column into python datetime.date values.
-    Handles:
-      - normal date strings
-      - pandas timestamps
-      - Excel serial numbers
-      - NaN / blanks
-    Returns a Series of dtype object containing datetime.date or NaT.
+    Convert messy date column -> python datetime.date values.
+    Handles: strings, timestamps, excel serials, blanks.
     """
     if s is None:
         return pd.Series(dtype="object")
@@ -113,6 +108,7 @@ def to_clean_date_series(s: pd.Series) -> pd.Series:
         pd.to_numeric(s2, errors="coerce").notna()
         & s2.astype(str).str.match(r"^\s*\d+(\.\d+)?\s*$", na=False)
     )
+
     out = pd.Series([pd.NaT] * len(s2), index=s2.index, dtype="object")
 
     if numeric_mask.any():
@@ -122,22 +118,22 @@ def to_clean_date_series(s: pd.Series) -> pd.Series:
 
     rest_mask = ~numeric_mask
     if rest_mask.any():
+        # dayfirst helps UK-style dates; ISO also works even if it warns sometimes
         dt_rest = pd.to_datetime(s2[rest_mask], errors="coerce", dayfirst=True)
         out.loc[rest_mask] = dt_rest.dt.date
 
     return out
 
 
-def safe_date_bounds(dates: pd.Series) -> Tuple[date, date]:
+def safe_date_bounds(dates: Optional[pd.Series]) -> Tuple[date, date]:
+    today = date.today()
     if dates is None or len(dates) == 0:
-        today = date.today()
         return today, today
 
     dt = pd.to_datetime(dates, errors="coerce")
     if dt.notna().any():
         return dt.min().date(), dt.max().date()
 
-    today = date.today()
     return today, today
 
 
@@ -147,13 +143,11 @@ def week_start(d: date) -> date:
 
 def parse_waiting_time(text: str) -> Tuple[Optional[float], Optional[str]]:
     """
-    Accepts formats like:
+    Accepts:
       - "10-12"
       - "10:30-12:15"
-      - "10.5-12" (treat 10.5 as 10:30)
-      - "10 - 12"
-    Returns (hours, normalized_string) or (None, None) if blank/invalid.
-    If end < start, assumes it crosses midnight and adds 24h.
+      - "9.5-11" => 09:30-11:00
+    Returns (hours, normalized "HH:MM-HH:MM") or (None, None) if invalid/blank.
     """
     if text is None:
         return None, None
@@ -162,23 +156,19 @@ def parse_waiting_time(text: str) -> Tuple[Optional[float], Optional[str]]:
     if raw == "":
         return None, None
 
-    # Normalize separators
     raw = raw.replace("–", "-").replace("—", "-")
     raw = re.sub(r"\s+", "", raw)
 
-    # Must contain exactly one dash
     if raw.count("-") != 1:
         return None, None
 
     start_s, end_s = raw.split("-")
 
     def to_minutes(t: str) -> Optional[int]:
-        # "10" -> 10:00
-        # "10:30" -> 10:30
-        # "10.5" -> 10:30
         if t == "":
             return None
 
+        # HH:MM
         if ":" in t:
             parts = t.split(":")
             if len(parts) != 2:
@@ -192,7 +182,7 @@ def parse_waiting_time(text: str) -> Tuple[Optional[float], Optional[str]]:
                 return None
             return h * 60 + m
 
-        # decimal hours like 10.5
+        # decimal hours (e.g., 9.5)
         if re.match(r"^\d+(\.\d+)?$", t):
             try:
                 val = float(t)
@@ -221,7 +211,6 @@ def parse_waiting_time(text: str) -> Tuple[Optional[float], Optional[str]]:
 
     hours = diff / 60.0
 
-    # Normalized display "HH:MM-HH:MM"
     def fmt(mins: int) -> str:
         mins = mins % (24 * 60)
         h = mins // 60
@@ -240,13 +229,20 @@ def read_all() -> pd.DataFrame:
         df = pd.read_sql_query(f"SELECT * FROM {TABLE_NAME} ORDER BY work_date DESC, id DESC", conn)
 
     if not df.empty:
-        df["work_date"] = to_clean_date_series(df["work_date"])
+        df["work_date"] = to_clean_date_series(df.get("work_date"))
         df["hours"] = pd.to_numeric(df.get("hours"), errors="coerce")
         df["amount"] = pd.to_numeric(df.get("amount"), errors="coerce")
         df["waiting_hours"] = pd.to_numeric(df.get("waiting_hours"), errors="coerce")
         df["waiting_amount"] = pd.to_numeric(df.get("waiting_amount"), errors="coerce")
         df["job_status"] = df.get("job_status", "").fillna("").astype(str)
         df["waiting_time"] = df.get("waiting_time", "").fillna("").astype(str)
+        df["description"] = df.get("description", "").fillna("").astype(str)
+        df["job_id"] = df.get("job_id", "").fillna("").astype(str)
+        df["category"] = df.get("category", "").fillna("").astype(str)
+
+        # Normalize status values
+        df["job_status"] = df["job_status"].apply(lambda x: x if x in STATUS_OPTIONS else "Pending")
+
     return df
 
 
@@ -278,12 +274,50 @@ def insert_row(
         conn.commit()
 
 
+def update_row(
+    row_id: int,
+    work_date_val: date,
+    description: str,
+    hours: Optional[float],
+    amount: Optional[float],
+    job_id: str,
+    category: str,
+    job_status: str,
+    waiting_time_raw: str,
+):
+    w_hours, w_norm = parse_waiting_time(waiting_time_raw)
+    w_amount = (w_hours * WAITING_RATE) if (w_hours is not None) else None
+
+    wd = work_date_val.isoformat() if isinstance(work_date_val, date) else None
+    status = job_status if job_status in STATUS_OPTIONS else "Pending"
+
+    with get_conn() as conn:
+        conn.execute(
+            f"""
+            UPDATE {TABLE_NAME}
+            SET
+                work_date = ?,
+                description = ?,
+                hours = ?,
+                amount = ?,
+                job_id = ?,
+                category = ?,
+                job_status = ?,
+                waiting_time = ?,
+                waiting_hours = ?,
+                waiting_amount = ?
+            WHERE id = ?
+            """,
+            (wd, description, hours, amount, job_id, category, status, w_norm, w_hours, w_amount, row_id),
+        )
+        conn.commit()
+
+
 def insert_many(df: pd.DataFrame) -> int:
     if df.empty:
         return 0
 
     df2 = df.copy()
-
     cols_lower = {c.lower(): c for c in df2.columns}
 
     def pick(*names):
@@ -296,12 +330,11 @@ def insert_many(df: pd.DataFrame) -> int:
     if c_work_date is None:
         raise ValueError("Upload must include a 'work_date' (or 'date') column.")
 
-    c_desc = pick("description", "desc", "details")
+    c_desc = pick("description", "desc", "details", "comments")
     c_hours = pick("hours", "hour")
-    c_amount = pick("amount", "cost", "value")
-    c_job_id = pick("job_id", "job", "jobid")
-    c_category = pick("category", "type")
-
+    c_amount = pick("amount", "cost", "value", "job_amount")
+    c_job_id = pick("job_id", "job", "jobid", "job_number")
+    c_category = pick("category", "type", "job_type")
     c_status = pick("job_status", "status")
     c_waiting_time = pick("waiting_time", "waiting", "waitingtime")
 
@@ -312,22 +345,18 @@ def insert_many(df: pd.DataFrame) -> int:
     df2["job_id"] = df2[c_job_id].astype(str) if c_job_id else ""
     df2["category"] = df2[c_category].astype(str) if c_category else ""
 
-    # Status
     if c_status:
         df2["job_status"] = df2[c_status].fillna("").astype(str).str.strip()
     else:
         df2["job_status"] = "Pending"
     df2["job_status"] = df2["job_status"].apply(lambda x: x if x in STATUS_OPTIONS else "Pending")
 
-    # Waiting time -> calculate
     if c_waiting_time:
         df2["waiting_time_raw"] = df2[c_waiting_time].fillna("").astype(str)
     else:
         df2["waiting_time_raw"] = ""
 
-    wh_list = []
-    wn_list = []
-    wa_list = []
+    wh_list, wn_list, wa_list = [], [], []
     for txt in df2["waiting_time_raw"].tolist():
         wh, wn = parse_waiting_time(txt)
         wh_list.append(wh)
@@ -338,7 +367,6 @@ def insert_many(df: pd.DataFrame) -> int:
     df2["waiting_time"] = wn_list
     df2["waiting_amount"] = wa_list
 
-    # Keep only valid dates
     df2 = df2[df2["work_date"].notna()].copy()
     if df2.empty:
         return 0
@@ -375,9 +403,6 @@ def insert_many(df: pd.DataFrame) -> int:
 
 
 def delete_duplicates():
-    """
-    Remove duplicates based on key columns, keeping lowest id.
-    """
     with get_conn() as conn:
         conn.execute(
             f"""
@@ -421,8 +446,6 @@ with st.sidebar:
         st.rerun()
 
 df_all = read_all()
-
-# Date range filter
 min_d, max_d = safe_date_bounds(df_all["work_date"] if not df_all.empty else None)
 
 with st.sidebar:
@@ -450,7 +473,7 @@ if not df.empty:
         )
         df = df[mask]
 
-tab1, tab2, tab3 = st.tabs(["Add entry", "Upload Excel/CSV", "View & Summary"])
+tab1, tab2, tab3 = st.tabs(["Add entry", "Upload Excel/CSV", "View & Edit"])
 
 with tab1:
     st.subheader("Add a single entry")
@@ -473,7 +496,7 @@ with tab1:
             else:
                 st.write(f"Normalized: **{w_norm}**")
                 st.write(f"Waiting hours: **{w_hours:.2f}**")
-                st.write(f"Waiting amount owed (£{WAITING_RATE:.2f}/hr): **£{(w_hours*WAITING_RATE):.2f}**")
+                st.write(f"Waiting owed (£{WAITING_RATE:.2f}/hr): **£{(w_hours * WAITING_RATE):.2f}**")
 
     description = st.text_area("Description", height=90)
 
@@ -497,10 +520,10 @@ with tab1:
 with tab2:
     st.subheader("Upload file (Excel or CSV)")
     st.write(
-        "Expected columns: `work_date` (or `date`), and optional `description`, `hours`, `amount`, `job_id`, "
-        "`category`, `job_status` (or `status`), `waiting_time`."
+        "Expected columns: `work_date` (or `date`), optional `description/comments`, `hours`, `amount/job_amount`, "
+        "`job_id/job_number`, `category/job_type`, `job_status/status`, `waiting_time`."
     )
-    st.caption("Waiting time examples: 10-12, 10:30-12:15, 9.5-11 (means 09:30-11:00).")
+    st.caption("Waiting time examples: 10-12, 10:30-12:15, 9.5-11.")
 
     up = st.file_uploader("Choose a file", type=["xlsx", "xls", "csv"])
     if up is not None:
@@ -528,11 +551,12 @@ with tab3:
     if df.empty:
         st.info("No records in this range.")
     else:
-        k1, k2, k3, k4 = st.columns(4)
+        k1, k2, k3, k4, k5 = st.columns(5)
         k1.metric("Rows", f"{len(df):,}")
         k2.metric("Work hours", f"{df['hours'].fillna(0).sum():,.2f}")
         k3.metric("Work amount (£)", f"{df['amount'].fillna(0).sum():,.2f}")
-        k4.metric("Waiting owed (£)", f"{df['waiting_amount'].fillna(0).sum():,.2f}")
+        k4.metric("Waiting hours", f"{df['waiting_hours'].fillna(0).sum():,.2f}")
+        k5.metric("Waiting owed (£)", f"{df['waiting_amount'].fillna(0).sum():,.2f}")
 
         st.dataframe(
             df[
@@ -554,6 +578,95 @@ with tab3:
             use_container_width=True,
             hide_index=True,
         )
+
+        st.divider()
+        st.subheader("Edit entry (by ID)")
+
+        id_list = df["id"].tolist()
+        selected_id = st.selectbox("Select ID to edit", options=id_list)
+
+        row = df[df["id"] == selected_id].iloc[0]
+        cur_date = row["work_date"] if isinstance(row["work_date"], date) else date.today()
+        cur_status = row.get("job_status", "Pending") or "Pending"
+        if cur_status not in STATUS_OPTIONS:
+            cur_status = "Pending"
+
+        cur_waiting = row.get("waiting_time", "") or ""
+        cur_desc = row.get("description", "") or ""
+        cur_job = row.get("job_id", "") or ""
+        cur_cat = row.get("category", "") or ""
+
+        cur_hours = row.get("hours", 0.0)
+        cur_hours = float(cur_hours) if pd.notna(cur_hours) else 0.0
+
+        cur_amount = row.get("amount", 0.0)
+        cur_amount = float(cur_amount) if pd.notna(cur_amount) else 0.0
+
+        with st.form("edit_form"):
+            c1, c2, c3 = st.columns(3)
+
+            with c1:
+                new_date = st.date_input("Work date", value=cur_date, key=f"ed_date_{selected_id}")
+                new_status = st.selectbox(
+                    "Job status",
+                    STATUS_OPTIONS,
+                    index=STATUS_OPTIONS.index(cur_status),
+                    key=f"ed_status_{selected_id}",
+                )
+                new_job_id = st.text_input("Job ID", value=cur_job, key=f"ed_job_{selected_id}")
+
+            with c2:
+                new_hours = st.number_input(
+                    "Hours (work)",
+                    min_value=0.0,
+                    step=0.5,
+                    value=cur_hours,
+                    key=f"ed_hours_{selected_id}",
+                )
+                new_amount = st.number_input(
+                    "Amount (£) (work)",
+                    step=0.5,
+                    value=cur_amount,
+                    key=f"ed_amount_{selected_id}",
+                )
+                new_category = st.text_input("Category", value=cur_cat, key=f"ed_cat_{selected_id}")
+
+            with c3:
+                new_waiting_raw = st.text_input(
+                    "Waiting time (e.g. 10-12 or 10:30-12:15)",
+                    value=cur_waiting,
+                    key=f"ed_wait_{selected_id}",
+                )
+                wh, wn = parse_waiting_time(new_waiting_raw)
+                if new_waiting_raw.strip():
+                    if wh is None:
+                        st.error("Waiting time format invalid. Use like 10-12 or 10:30-12:15.")
+                    else:
+                        st.write(f"Normalized: **{wn}**")
+                        st.write(f"Waiting hours: **{wh:.2f}**")
+                        st.write(f"Waiting owed: **£{(wh * WAITING_RATE):.2f}**")
+
+            new_desc = st.text_area("Description", value=cur_desc, height=90, key=f"ed_desc_{selected_id}")
+
+            save = st.form_submit_button("Save changes")
+
+            if save:
+                if new_waiting_raw.strip() and wh is None:
+                    st.error("Fix waiting time format before saving.")
+                else:
+                    update_row(
+                        row_id=int(selected_id),
+                        work_date_val=new_date,
+                        description=new_desc,
+                        hours=new_hours,
+                        amount=new_amount,
+                        job_id=new_job_id,
+                        category=new_category,
+                        job_status=new_status,
+                        waiting_time_raw=new_waiting_raw,
+                    )
+                    st.success("Updated.")
+                    st.rerun()
 
         st.divider()
         st.subheader("Weekly summary")
