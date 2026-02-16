@@ -699,14 +699,19 @@ with st.sidebar:
 df_all = read_all()
 min_d, max_d = safe_date_bounds(df_all["work_date"] if not df_all.empty else None)
 
+# Always include today if today is newer
+default_end = max(max_d, date.today())
+
 with st.sidebar:
     st.header("Filters")
     start_d, end_d = st.date_input(
         "Work date range",
-        value=(min_d, max_d),
+        value=(min_d, default_end),
         min_value=min_d,
-        max_value=max_d,
+        max_value=default_end,
     )
+
+    
     status_filter = st.multiselect("Job status", options=STATUS_OPTIONS, default=STATUS_OPTIONS)
     search_txt = st.text_input(
         "Search (job number / vehicle reg / auth code / locations)",
