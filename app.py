@@ -1,4 +1,3 @@
-
 import os
 import re
 import sqlite3
@@ -14,8 +13,8 @@ import streamlit as st
 # =========================
 APP_TITLE = "Worklog"
 
-# Stronger: DB location can be controlled by env var on server
-# systemd example:
+# IMPORTANT: use env var to guarantee correct DB path on server
+# In systemd add:
 # Environment=WORKLOG_DB_DIR=/var/lib/worklog
 DB_DIR = os.environ.get("WORKLOG_DB_DIR", "/var/lib/worklog")
 DB_PATH = os.path.join(DB_DIR, "worklog.db")
@@ -29,7 +28,7 @@ JOB_TYPE_OPTIONS = ["STRD Trade Plate", "Inspect and Collect", "Inspect and Coll
 # REQUIRED BY YOU
 JOB_EXPENSE_OPTIONS = ["uber", "taxi", "train", "toll", "other"]
 
-# Strict UI order (do not change)
+# Your required strict order + titles (do not change)
 UI_COLUMNS = [
     "Date",
     "job number",
@@ -75,13 +74,16 @@ def normalize_status(x: Any) -> str:
     s = str(x or "").strip()
     return s if s in STATUS_OPTIONS else "Pending"
 
+
 def normalize_job_type(x: Any) -> str:
     s = str(x or "").strip()
     return s if s in JOB_TYPE_OPTIONS else JOB_TYPE_OPTIONS[0]
 
+
 def normalize_expense_type(x: Any) -> str:
     s = str(x or "").strip().lower()
     return s if s in JOB_EXPENSE_OPTIONS else "other"
+
 
 # =========================
 # DB helpers
@@ -89,11 +91,12 @@ def normalize_expense_type(x: Any) -> str:
 def ensure_db_dir():
     os.makedirs(DB_DIR, exist_ok=True)
 
+
 def get_conn() -> sqlite3.Connection:
     """
     Harden SQLite:
-    - WAL mode reduces lock errors
-    - busy_timeout avoids transient "database is locked"
+    - WAL reduces lock issues
+    - busy_timeout reduces 'database is locked'
     """
     ensure_db_dir()
     conn = sqlite3.connect(DB_PATH, check_same_thread=False)
@@ -103,11 +106,17 @@ def get_conn() -> sqlite3.Connection:
     conn.execute("PRAGMA busy_timeout=5000;")
     return conn
 
+
 def table_columns(conn: sqlite3.Connection, table_name: str) -> set:
     rows = conn.execute(f"PRAGMA table_info({table_name})").fetchall()
     return {r[1] for r in rows}
 
+
 def ensure_schema():
+    """
+    Create table if missing + migrate missing columns.
+    Keeps legacy columns so old data stays intact.
+    """
     with get_conn() as conn:
         conn.execute(
             f"""
@@ -118,9 +127,9 @@ def ensure_schema():
                 work_date TEXT,
                 description TEXT,
                 hours REAL,
-                amount REAL,
-                job_id TEXT,
-                category TEXT,
+                amount REAL,         -- job amount
+                job_id TEXT,         -- job number
+                category TEXT,       -- job type
                 job_status TEXT,
 
                 -- waiting
@@ -176,38 +185,103 @@ def ensure_schema():
         conn.execute(f"CREATE INDEX IF NOT EXISTS idx_{TABLE_NAME}_status ON {TABLE_NAME}(job_status)")
         conn.commit()
 
+
 # =========================
-# Parsing utilities
+# Date + waiting parsing
 # =========================
 def to_clean_date_series(s: pd.Series) -> pd.Series:
+    """
+    Robust date coercion:
+    - ISO strings: 2026-02-16
+    - UK strings: 16/02/2026 (dayfirst)
+    - Excel serial (1900): ~ 20000-80000
+    - Excel serial (1904): fallback
+    - yyyymmdd numeric/string: 20260216
+    - Unix timestamps (seconds/ms)
+    Returns python date objects or NaT.
+    """
     if s is None:
         return pd.Series(dtype="object")
 
     s2 = s.copy()
 
-    if len(s2) and all(isinstance(v, date) or pd.isna(v) for v in s2.tolist()):
-        return s2
-
     if pd.api.types.is_datetime64_any_dtype(s2):
         return s2.dt.date
 
-    numeric_mask = (
-        pd.to_numeric(s2, errors="coerce").notna()
-        & s2.astype(str).str.match(r"^\s*\d+(\.\d+)?\s*$", na=False)
-    )
+    s_str = s2.astype("string").str.strip()
     out = pd.Series([pd.NaT] * len(s2), index=s2.index, dtype="object")
 
-    if numeric_mask.any():
-        nums = pd.to_numeric(s2[numeric_mask], errors="coerce")
-        dt_nums = pd.to_datetime(nums, unit="D", origin="1899-12-30", errors="coerce")
-        out.loc[numeric_mask] = dt_nums.dt.date
+    # 1) strict ISO (how we store in DB)
+    iso = pd.to_datetime(s_str, format="%Y-%m-%d", errors="coerce")
+    iso_mask = iso.notna()
+    if iso_mask.any():
+        out.loc[iso_mask] = iso[iso_mask].dt.date
 
-    rest_mask = ~numeric_mask
-    if rest_mask.any():
-        dt_rest = pd.to_datetime(s2[rest_mask], errors="coerce", dayfirst=True)
-        out.loc[rest_mask] = dt_rest.dt.date
+    rem = ~iso_mask
 
+    # 2) numeric-like
+    num = pd.to_numeric(s_str.where(rem, pd.NA), errors="coerce")
+    num_mask = num.notna()
+    if num_mask.any():
+        n = num[num_mask]
+
+        # 2a) yyyyMMdd (e.g. 20260216)
+        ymd_mask = (n >= 19000101) & (n <= 21001231)
+        if ymd_mask.any():
+            ymd_vals = n[ymd_mask].astype("int64").astype(str)
+            ymd_dt = pd.to_datetime(ymd_vals, format="%Y%m%d", errors="coerce")
+            out.loc[ymd_dt.index] = ymd_dt.dt.date
+
+        rest = n[~ymd_mask]
+
+        # 2b) unix ms
+        ms_mask = rest >= 10_000_000_000
+        if ms_mask.any():
+            ms_dt = pd.to_datetime(rest[ms_mask], unit="ms", errors="coerce", utc=False)
+            out.loc[ms_dt.index] = ms_dt.dt.date
+
+        # 2c) unix seconds
+        sec_rest = rest[~ms_mask]
+        sec_mask = (sec_rest >= 1_000_000_000) & (sec_rest <= 4_000_000_000)
+        if sec_mask.any():
+            sec_dt = pd.to_datetime(sec_rest[sec_mask], unit="s", errors="coerce", utc=False)
+            out.loc[sec_dt.index] = sec_dt.dt.date
+
+        # 2d) excel serial 1900
+        excel_rest = sec_rest[~sec_mask]
+        excel_mask = (excel_rest >= 20000) & (excel_rest <= 80000)
+        if excel_mask.any():
+            ex = excel_rest[excel_mask]
+            ex_dt = pd.to_datetime(ex, unit="D", origin="1899-12-30", errors="coerce")
+            out.loc[ex_dt.index] = ex_dt.dt.date
+
+        # 2e) excel serial 1904 fallback (only those still NaT)
+        still_nat_idx = out[out.isna()].index.intersection(excel_rest.index)
+        if len(still_nat_idx) > 0:
+            ex2 = excel_rest.loc[still_nat_idx]
+            ex2_dt = pd.to_datetime(ex2, unit="D", origin="1904-01-01", errors="coerce")
+            out.loc[ex2_dt.index] = ex2_dt.dt.date
+
+    # 3) remaining strings -> UK dayfirst
+    rem2 = out.isna()
+    if rem2.any():
+        dt_rest = pd.to_datetime(s_str[rem2], errors="coerce", dayfirst=True)
+        out.loc[dt_rest.index] = dt_rest.dt.date
+
+    # sanity range (prevents random future dates from garbage inputs)
+    min_ok = date(2000, 1, 1)
+    max_ok = date(2100, 12, 31)
+
+    def clamp(d):
+        if pd.isna(d) or d is None:
+            return pd.NaT
+        if isinstance(d, date) and (d < min_ok or d > max_ok):
+            return pd.NaT
+        return d
+
+    out = out.apply(clamp)
     return out
+
 
 def safe_date_bounds(dates: Optional[pd.Series]) -> Tuple[date, date]:
     today = date.today()
@@ -222,16 +296,19 @@ def safe_date_bounds(dates: Optional[pd.Series]) -> Tuple[date, date]:
     vals = s.tolist()
     return min(vals), max(vals)
 
+
 def week_start(d: date) -> date:
     return d - timedelta(days=d.weekday())
+
 
 def parse_waiting_time(text: str) -> Tuple[Optional[float], Optional[str]]:
     """
     Accepts:
       - "10-12"
       - "10:30-12:15"
-      - "9.5-11"
-      - "10.30-12.15" (supported)
+      - "9.5-11" => 09:30-11:00
+      - "10.30-12.15" => 10:30-12:15
+    Returns (hours, normalized "HH:MM-HH:MM") or (None, None).
     """
     if text is None:
         return None, None
@@ -292,7 +369,7 @@ def parse_waiting_time(text: str) -> Tuple[Optional[float], Optional[str]]:
 
     diff = end_min - start_min
     if diff < 0:
-        diff += 24 * 60
+        diff += 24 * 60  # crosses midnight
 
     hours = diff / 60.0
 
@@ -303,6 +380,7 @@ def parse_waiting_time(text: str) -> Tuple[Optional[float], Optional[str]]:
         return f"{h:02d}:{m:02d}"
 
     return hours, f"{fmt(start_min)}-{fmt(end_min)}"
+
 
 # =========================
 # Data access
@@ -328,6 +406,7 @@ def read_all() -> pd.DataFrame:
 
     df["job_id"] = df["job_id"].fillna("").astype(str).str.strip()
     df["category"] = df["category"].fillna("").astype(str).apply(normalize_job_type)
+    df["job_status"] = df["job_status"].apply(normalize_status)
 
     df["vehicle_description"] = df["vehicle_description"].fillna("").astype(str)
     df["vehicle_reg"] = df["vehicle_reg"].fillna("").astype(str)
@@ -336,9 +415,8 @@ def read_all() -> pd.DataFrame:
     df["job_expenses"] = df["job_expenses"].fillna("").astype(str).apply(normalize_expense_type)
     df["auth_code"] = df["auth_code"].fillna("").astype(str)
 
-    df["job_status"] = df["job_status"].apply(normalize_status)
-
     return df
+
 
 def read_rows_by_job_number(job_number: str) -> pd.DataFrame:
     job_number = str(job_number).strip()
@@ -366,6 +444,7 @@ def read_rows_by_job_number(job_number: str) -> pd.DataFrame:
     df["work_date"] = to_clean_date_series(df["work_date"])
     return df
 
+
 def insert_row(
     work_date_val: date,
     job_number: str,
@@ -381,6 +460,10 @@ def insert_row(
     job_status: str,
     waiting_time_raw: str,
 ):
+    # sanity date
+    if work_date_val < date(2000, 1, 1) or work_date_val > date(2100, 12, 31):
+        raise ValueError("Date looks wrong. Fix it before saving.")
+
     w_hours, w_norm = parse_waiting_time(waiting_time_raw)
     w_amount = (w_hours * WAITING_RATE) if (w_hours is not None) else None
 
@@ -436,6 +519,7 @@ def insert_row(
         )
         conn.commit()
 
+
 def update_row_by_id(
     row_id: int,
     work_date_val: date,
@@ -452,6 +536,9 @@ def update_row_by_id(
     job_status: str,
     waiting_time_raw: str,
 ):
+    if work_date_val < date(2000, 1, 1) or work_date_val > date(2100, 12, 31):
+        raise ValueError("Date looks wrong. Fix it before saving.")
+
     w_hours, w_norm = parse_waiting_time(waiting_time_raw)
     w_amount = (w_hours * WAITING_RATE) if (w_hours is not None) else None
 
@@ -503,7 +590,22 @@ def update_row_by_id(
         )
         conn.commit()
 
+
 def insert_many(df: pd.DataFrame) -> int:
+    """
+    Import Excel/CSV with flexible column names.
+
+    Required:
+      - Date / work_date
+      - job number / job_number / job_id
+    Optional:
+      - job type / category
+      - vehicle fields
+      - amounts
+      - auth code
+      - job status
+      - waiting time
+    """
     if df is None or df.empty:
         return 0
 
@@ -572,11 +674,13 @@ def insert_many(df: pd.DataFrame) -> int:
     df2["waiting_time"] = wn_list
     df2["waiting_amount"] = wa_list
 
+    # enforce required
     df2 = df2[df2["work_date"].notna()].copy()
     df2 = df2[df2["job_id"] != ""].copy()
     if df2.empty:
         return 0
 
+    # store ISO
     df2["work_date"] = df2["work_date"].apply(lambda d: d.isoformat() if isinstance(d, date) else None)
 
     rows = list(
@@ -667,6 +771,7 @@ def insert_many(df: pd.DataFrame) -> int:
 
     return len(rows)
 
+
 def delete_duplicates():
     with get_conn() as conn:
         conn.execute(
@@ -694,6 +799,7 @@ def delete_duplicates():
         )
         conn.commit()
 
+
 # =========================
 # Streamlit UI
 # =========================
@@ -702,13 +808,12 @@ st.title(APP_TITLE)
 
 ensure_schema()
 
-# Session state for edit persistence
+# session state for stable edit UX
 if "edit_selected_job" not in st.session_state:
     st.session_state.edit_selected_job = ""
 if "edit_selected_row_id" not in st.session_state:
     st.session_state.edit_selected_row_id = None
 
-# Sidebar: show DB + live version (kills the “can’t see changes” problem)
 with st.sidebar:
     st.header("Actions")
     if st.button("Refresh data"):
@@ -740,11 +845,13 @@ with st.sidebar:
         min_value=min_d,
         max_value=default_end,
     )
-    # Defensive: handle single date
+
+    # Defensive: if Streamlit returns single date
     if isinstance(date_val, (tuple, list)) and len(date_val) == 2:
         start_d, end_d = date_val
     else:
-        start_d, end_d = date_val, date_val
+        start_d = date_val
+        end_d = date_val
 
     status_filter = st.multiselect("Job status", options=STATUS_OPTIONS, default=STATUS_OPTIONS)
     search_txt = st.text_input(
@@ -805,23 +912,26 @@ with tab1:
         elif waiting_time_raw.strip() and w_hours is None:
             st.error("Fix waiting time format before saving.")
         else:
-            insert_row(
-                work_date_val=work_date_val,
-                job_number=job_number,
-                job_type=job_type,
-                vehicle_description=vehicle_description,
-                vehicle_reg=vehicle_reg,
-                collection_from=collection_from,
-                delivery_to=delivery_to,
-                job_amount=float(job_amount) if job_amount is not None else None,
-                job_expenses=job_expenses,
-                expenses_amount=float(expenses_amount) if expenses_amount is not None else None,
-                auth_code=auth_code,
-                job_status=job_status,
-                waiting_time_raw=waiting_time_raw,
-            )
-            st.success("Saved.")
-            st.rerun()
+            try:
+                insert_row(
+                    work_date_val=work_date_val,
+                    job_number=job_number,
+                    job_type=job_type,
+                    vehicle_description=vehicle_description,
+                    vehicle_reg=vehicle_reg,
+                    collection_from=collection_from,
+                    delivery_to=delivery_to,
+                    job_amount=float(job_amount) if job_amount is not None else None,
+                    job_expenses=job_expenses,
+                    expenses_amount=float(expenses_amount) if expenses_amount is not None else None,
+                    auth_code=auth_code,
+                    job_status=job_status,
+                    waiting_time_raw=waiting_time_raw,
+                )
+                st.success("Saved.")
+                st.rerun()
+            except Exception as e:
+                st.error(f"Save failed: {e}")
 
 # -------- Upload --------
 with tab2:
@@ -863,22 +973,21 @@ with tab3:
 
         st.divider()
         st.markdown("## Edit (select a job number and save)")
-        st.caption("After saving, the form stays ready for the next edit (selection is kept).")
+        st.caption("Edit stays ready: selection is kept after saving and values refresh from DB.")
 
-        # Use ALL jobs for edit dropdown (not just filtered) so you can always edit
-        job_numbers = sorted([jn for jn in df_all["job_id"].dropna().astype(str).str.strip().unique().tolist() if jn])
+        # Use ALL jobs for edit dropdown (so filters don’t hide editable items)
+        all_jobs = sorted([jn for jn in df_all["job_id"].dropna().astype(str).str.strip().unique().tolist() if jn])
 
-        if not job_numbers:
+        if not all_jobs:
             st.info("No job numbers found.")
         else:
-            # Keep selection
-            if st.session_state.edit_selected_job not in job_numbers:
-                st.session_state.edit_selected_job = job_numbers[0]
+            if st.session_state.edit_selected_job not in all_jobs:
+                st.session_state.edit_selected_job = all_jobs[0]
 
             selected_job_number = st.selectbox(
                 "Select job number",
-                options=job_numbers,
-                index=job_numbers.index(st.session_state.edit_selected_job),
+                options=all_jobs,
+                index=all_jobs.index(st.session_state.edit_selected_job),
                 key="edit_job_select",
             )
             st.session_state.edit_selected_job = selected_job_number
@@ -887,7 +996,7 @@ with tab3:
             if matches.empty:
                 st.error("Could not load that job number from the database.")
             else:
-                # Pick exact row if multiple
+                # Pick row if multiple
                 if len(matches) > 1:
                     m2 = matches.copy()
                     m2["work_date_str"] = m2["work_date"].astype(str)
@@ -897,7 +1006,6 @@ with tab3:
                     )
                     labels = m2["pick_label"].tolist()
 
-                    # Keep row selection by row_id
                     default_label = labels[0]
                     if st.session_state.edit_selected_row_id is not None:
                         hit = m2[m2["id"].astype(int) == int(st.session_state.edit_selected_row_id)]
@@ -927,7 +1035,6 @@ with tab3:
                 cur_vreg = str(picked_row.get("vehicle_reg") or "").strip()
                 cur_from = str(picked_row.get("collection_from") or "").strip()
                 cur_to = str(picked_row.get("delivery_to") or "").strip()
-
                 cur_job_amount = float(picked_row.get("amount") or 0.0)
                 cur_job_exp = normalize_expense_type(picked_row.get("job_expenses"))
                 cur_exp_amt = float(picked_row.get("expenses_amount") or 0.0)
@@ -935,7 +1042,7 @@ with tab3:
                 cur_status = normalize_status(picked_row.get("job_status"))
                 cur_waiting = str(picked_row.get("waiting_time") or "").strip()
 
-                # Row-specific form keys (prevents Streamlit keeping old values between different rows)
+                # Row-specific keys prevent Streamlit mixing old values across rows
                 form_key = f"edit_form_{row_id}"
 
                 with st.form(form_key):
@@ -977,34 +1084,38 @@ with tab3:
                         elif new_waiting_raw.strip() and wh is None:
                             st.error("Fix waiting time format before saving.")
                         else:
-                            update_row_by_id(
-                                row_id=row_id,
-                                work_date_val=new_date,
-                                job_number=new_job_number,
-                                job_type=new_job_type,
-                                vehicle_description=new_vdesc,
-                                vehicle_reg=new_vreg,
-                                collection_from=new_from,
-                                delivery_to=new_to,
-                                job_amount=float(new_job_amount) if new_job_amount is not None else None,
-                                job_expenses=new_job_expenses,
-                                expenses_amount=float(new_exp_amt) if new_exp_amt is not None else None,
-                                auth_code=new_auth,
-                                job_status=new_status,
-                                waiting_time_raw=new_waiting_raw,
-                            )
+                            try:
+                                update_row_by_id(
+                                    row_id=row_id,
+                                    work_date_val=new_date,
+                                    job_number=new_job_number,
+                                    job_type=new_job_type,
+                                    vehicle_description=new_vdesc,
+                                    vehicle_reg=new_vreg,
+                                    collection_from=new_from,
+                                    delivery_to=new_to,
+                                    job_amount=float(new_job_amount) if new_job_amount is not None else None,
+                                    job_expenses=new_job_expenses,
+                                    expenses_amount=float(new_exp_amt) if new_exp_amt is not None else None,
+                                    auth_code=new_auth,
+                                    job_status=new_status,
+                                    waiting_time_raw=new_waiting_raw,
+                                )
 
-                            # Keep selection so the edit stays "ready"
-                            st.session_state.edit_selected_job = str(new_job_number).strip()
-                            st.session_state.edit_selected_row_id = row_id
+                                # keep selection so next edit is ready
+                                st.session_state.edit_selected_job = str(new_job_number).strip()
+                                st.session_state.edit_selected_row_id = row_id
 
-                            st.success("Updated.")
-                            st.rerun()
+                                st.success("Updated.")
+                                st.rerun()
+                            except Exception as e:
+                                st.error(f"Update failed: {e}")
 
         st.divider()
         st.subheader("Records (view only) — strict column order")
 
-        view_df = df.copy().rename(
+        view_df = df.copy()
+        view_df = view_df.rename(
             columns={
                 "work_date": "Date",
                 "job_id": "job number",
