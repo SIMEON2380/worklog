@@ -13,7 +13,6 @@ import streamlit as st
 # =========================
 APP_TITLE = "Worklog"
 
-# Use env var so server always points to correct DB
 # systemd: Environment=WORKLOG_DB_DIR=/var/lib/worklog
 DB_DIR = os.environ.get("WORKLOG_DB_DIR", "/var/lib/worklog")
 DB_PATH = os.path.join(DB_DIR, "worklog.db")
@@ -24,10 +23,8 @@ WAITING_RATE = 7.50
 STATUS_OPTIONS = ["Start", "Completed", "Aborted", "Paid", "Pending", "Withdraw"]
 JOB_TYPE_OPTIONS = ["STRD Trade Plate", "Inspect and Collect", "Inspect and Collect 2"]
 
-# REQUIRED BY YOU
 JOB_EXPENSE_OPTIONS = ["uber", "taxi", "train", "toll", "other"]
 
-# strict UI order (do not change)
 UI_COLUMNS = [
     "Date",
     "job number",
@@ -67,7 +64,7 @@ EXPECTED_DB_COLS = [
 ]
 
 # =========================
-# Normalizers
+# Helpers
 # =========================
 def normalize_status(x: Any) -> str:
     s = str(x or "").strip()
@@ -84,15 +81,27 @@ def normalize_expense_type(x: Any) -> str:
     return s if s in JOB_EXPENSE_OPTIONS else "other"
 
 
-# =========================
-# DB helpers
-# =========================
+def clean_job_number(val: Any) -> str:
+    """
+    Fix Excel numeric job ids like 11623733.0 -> 11623733
+    Keeps text values as-is.
+    """
+    if val is None:
+        return ""
+    s = str(val).strip()
+    if s == "" or s.lower() == "nan":
+        return ""
+    s = s.replace(",", "")
+    if re.fullmatch(r"\d+\.0+", s):
+        s = s.split(".")[0]
+    return s.strip()
+
+
 def ensure_db_dir():
     os.makedirs(DB_DIR, exist_ok=True)
 
 
 def get_conn() -> sqlite3.Connection:
-    """SQLite hardened settings to reduce 'database is locked'."""
     ensure_db_dir()
     conn = sqlite3.connect(DB_PATH, check_same_thread=False)
     conn.execute("PRAGMA journal_mode=WAL;")
@@ -108,17 +117,12 @@ def table_columns(conn: sqlite3.Connection, table_name: str) -> set:
 
 
 def ensure_schema():
-    """
-    Create table if missing + migrate missing columns.
-    Keeps legacy columns.
-    """
     with get_conn() as conn:
         conn.execute(
             f"""
             CREATE TABLE IF NOT EXISTS {TABLE_NAME} (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
 
-                -- legacy base
                 work_date TEXT,
                 description TEXT,
                 hours REAL,
@@ -127,12 +131,10 @@ def ensure_schema():
                 category TEXT,
                 job_status TEXT,
 
-                -- waiting
                 waiting_time TEXT,
                 waiting_hours REAL,
                 waiting_amount REAL,
 
-                -- required fields
                 vehicle_description TEXT,
                 vehicle_reg TEXT,
                 collection_from TEXT,
@@ -148,7 +150,6 @@ def ensure_schema():
         conn.commit()
 
         cols = table_columns(conn, TABLE_NAME)
-
         migrations = [
             ("work_date", "TEXT"),
             ("description", "TEXT"),
@@ -169,7 +170,6 @@ def ensure_schema():
             ("auth_code", "TEXT"),
             ("created_at", "TEXT"),
         ]
-
         for col, col_type in migrations:
             if col not in cols:
                 conn.execute(f"ALTER TABLE {TABLE_NAME} ADD COLUMN {col} {col_type}")
@@ -182,19 +182,9 @@ def ensure_schema():
 
 
 # =========================
-# Date parsing (ROBUST)
+# Date parsing
 # =========================
 def to_clean_date_series(s: pd.Series) -> pd.Series:
-    """
-    Robust date coercion:
-    - ISO strings: 2026-02-16
-    - UK strings: 16/02/2026 (dayfirst)
-    - Excel serial (1900): ~ 20000-80000
-    - Excel serial (1904): fallback
-    - yyyymmdd numeric/string: 20260216
-    - Unix timestamps seconds/ms
-    Returns python date objects or NaT.
-    """
     if s is None:
         return pd.Series(dtype="object")
 
@@ -206,21 +196,17 @@ def to_clean_date_series(s: pd.Series) -> pd.Series:
     s_str = s2.astype("string").str.strip()
     out = pd.Series([pd.NaT] * len(s2), index=s2.index, dtype="object")
 
-    # 1) strict ISO
     iso = pd.to_datetime(s_str, format="%Y-%m-%d", errors="coerce")
     iso_mask = iso.notna()
     if iso_mask.any():
         out.loc[iso_mask] = iso[iso_mask].dt.date
 
     rem = ~iso_mask
-
-    # 2) numeric-like
     num = pd.to_numeric(s_str.where(rem, pd.NA), errors="coerce")
     num_mask = num.notna()
     if num_mask.any():
         n = num[num_mask]
 
-        # 2a) yyyyMMdd
         ymd_mask = (n >= 19000101) & (n <= 21001231)
         if ymd_mask.any():
             ymd_vals = n[ymd_mask].astype("int64").astype(str)
@@ -229,20 +215,17 @@ def to_clean_date_series(s: pd.Series) -> pd.Series:
 
         rest = n[~ymd_mask]
 
-        # 2b) unix ms
         ms_mask = rest >= 10_000_000_000
         if ms_mask.any():
             ms_dt = pd.to_datetime(rest[ms_mask], unit="ms", errors="coerce", utc=False)
             out.loc[ms_dt.index] = ms_dt.dt.date
 
-        # 2c) unix seconds
         sec_rest = rest[~ms_mask]
         sec_mask = (sec_rest >= 1_000_000_000) & (sec_rest <= 4_000_000_000)
         if sec_mask.any():
             sec_dt = pd.to_datetime(sec_rest[sec_mask], unit="s", errors="coerce", utc=False)
             out.loc[sec_dt.index] = sec_dt.dt.date
 
-        # 2d) excel 1900
         excel_rest = sec_rest[~sec_mask]
         excel_mask = (excel_rest >= 20000) & (excel_rest <= 80000)
         if excel_mask.any():
@@ -250,14 +233,12 @@ def to_clean_date_series(s: pd.Series) -> pd.Series:
             ex_dt = pd.to_datetime(ex, unit="D", origin="1899-12-30", errors="coerce")
             out.loc[ex_dt.index] = ex_dt.dt.date
 
-        # 2e) excel 1904 fallback
         still_nat_idx = out[out.isna()].index.intersection(excel_rest.index)
         if len(still_nat_idx) > 0:
             ex2 = excel_rest.loc[still_nat_idx]
             ex2_dt = pd.to_datetime(ex2, unit="D", origin="1904-01-01", errors="coerce")
             out.loc[ex2_dt.index] = ex2_dt.dt.date
 
-    # 3) remaining strings -> UK dayfirst
     rem2 = out.isna()
     if rem2.any():
         dt_rest = pd.to_datetime(s_str[rem2], errors="coerce", dayfirst=True)
@@ -294,26 +275,17 @@ def week_start(d: date) -> date:
 
 
 # =========================
-# Waiting time parsing
+# Waiting parsing
 # =========================
 def parse_waiting_time(text: str) -> Tuple[Optional[float], Optional[str]]:
-    """
-    Accepts:
-      - "10-12"
-      - "10:30-12:15"
-      - "9.5-11" => 09:30-11:00
-      - "10.30-12.15" => 10:30-12:15
-    """
     if text is None:
         return None, None
-
     raw = str(text).strip()
     if raw == "":
         return None, None
 
     raw = raw.replace("–", "-").replace("—", "-")
     raw = re.sub(r"\s+", "", raw)
-
     if raw.count("-") != 1:
         return None, None
 
@@ -322,10 +294,8 @@ def parse_waiting_time(text: str) -> Tuple[Optional[float], Optional[str]]:
     def to_minutes(t: str) -> Optional[int]:
         if t == "":
             return None
-
         if re.match(r"^\d{1,2}\.\d{2}$", t):
             t = t.replace(".", ":")
-
         if ":" in t:
             parts = t.split(":")
             if len(parts) != 2:
@@ -338,7 +308,6 @@ def parse_waiting_time(text: str) -> Tuple[Optional[float], Optional[str]]:
             if not (0 <= h <= 47 and 0 <= m <= 59):
                 return None
             return h * 60 + m
-
         if re.match(r"^\d+(\.\d+)?$", t):
             try:
                 val = float(t)
@@ -353,7 +322,6 @@ def parse_waiting_time(text: str) -> Tuple[Optional[float], Optional[str]]:
             if not (0 <= h <= 47 and 0 <= m <= 59):
                 return None
             return h * 60 + m
-
         return None
 
     start_min = to_minutes(start_s)
@@ -393,12 +361,11 @@ def read_all() -> pd.DataFrame:
     df["work_date"] = to_clean_date_series(df["work_date"])
     df["amount"] = pd.to_numeric(df["amount"], errors="coerce")
     df["expenses_amount"] = pd.to_numeric(df["expenses_amount"], errors="coerce")
+    df["waiting_amount"] = pd.to_numeric(df["waiting_amount"], errors="coerce")
+    df["waiting_hours"] = pd.to_numeric(df["waiting_hours"], errors="coerce")
 
     df["waiting_time"] = df["waiting_time"].fillna("").astype(str)
-    df["waiting_hours"] = pd.to_numeric(df["waiting_hours"], errors="coerce")
-    df["waiting_amount"] = pd.to_numeric(df["waiting_amount"], errors="coerce")
-
-    df["job_id"] = df["job_id"].fillna("").astype(str).str.strip()
+    df["job_id"] = df["job_id"].apply(clean_job_number)
     df["category"] = df["category"].fillna("").astype(str).apply(normalize_job_type)
     df["job_status"] = df["job_status"].apply(normalize_status)
 
@@ -413,7 +380,7 @@ def read_all() -> pd.DataFrame:
 
 
 def read_rows_by_job_number(job_number: str) -> pd.DataFrame:
-    job_number = str(job_number).strip()
+    job_number = clean_job_number(job_number)
     if not job_number:
         return pd.DataFrame()
 
@@ -427,15 +394,14 @@ def read_rows_by_job_number(job_number: str) -> pd.DataFrame:
             conn,
             params=(job_number,),
         )
-
     if df.empty:
         return df
 
     for c in EXPECTED_DB_COLS:
         if c not in df.columns:
             df[c] = None
-
     df["work_date"] = to_clean_date_series(df["work_date"])
+    df["job_id"] = df["job_id"].apply(clean_job_number)
     return df
 
 
@@ -454,6 +420,8 @@ def insert_row(
     job_status: str,
     waiting_time_raw: str,
 ):
+    job_number = clean_job_number(job_number)
+
     w_hours, w_norm = parse_waiting_time(waiting_time_raw)
     w_amount = (w_hours * WAITING_RATE) if (w_hours is not None) else None
 
@@ -467,29 +435,17 @@ def insert_row(
             f"""
             INSERT INTO {TABLE_NAME}
               (
-                work_date,
-                job_id,
-                category,
-                vehicle_description,
-                vehicle_reg,
-                collection_from,
-                delivery_to,
-                amount,
-                job_expenses,
-                expenses_amount,
-                auth_code,
-                job_status,
-                waiting_time,
-                waiting_hours,
-                waiting_amount,
-                description,
-                hours
+                work_date, job_id, category,
+                vehicle_description, vehicle_reg, collection_from, delivery_to,
+                amount, job_expenses, expenses_amount, auth_code, job_status,
+                waiting_time, waiting_hours, waiting_amount,
+                description, hours
               )
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 wd,
-                str(job_number).strip(),
+                job_number,
                 jt,
                 str(vehicle_description or "").strip(),
                 str(vehicle_reg or "").strip(),
@@ -526,6 +482,8 @@ def update_row_by_id(
     job_status: str,
     waiting_time_raw: str,
 ):
+    job_number = clean_job_number(job_number)
+
     w_hours, w_norm = parse_waiting_time(waiting_time_raw)
     w_amount = (w_hours * WAITING_RATE) if (w_hours is not None) else None
 
@@ -558,7 +516,7 @@ def update_row_by_id(
             """,
             (
                 wd,
-                str(job_number).strip(),
+                job_number,
                 jt,
                 str(vehicle_description or "").strip(),
                 str(vehicle_reg or "").strip(),
@@ -594,7 +552,6 @@ def insert_many(df: pd.DataFrame) -> int:
 
     c_date = pick("date", "work_date")
     c_job = pick("job number", "job_number", "job_id", "jobid", "job")
-
     if c_date is None:
         raise ValueError("Upload must include Date (or work_date).")
     if c_job is None:
@@ -613,7 +570,7 @@ def insert_many(df: pd.DataFrame) -> int:
     c_waiting = pick("waiting time", "waiting_time", "waiting")
 
     df2["work_date"] = to_clean_date_series(df2[c_date])
-    df2["job_id"] = df2[c_job].fillna("").astype(str).str.strip()
+    df2["job_id"] = df2[c_job].apply(clean_job_number)
 
     df2["job_type"] = df2[c_job_type].fillna("").astype(str).str.strip() if c_job_type else JOB_TYPE_OPTIONS[0]
     df2["job_type"] = df2["job_type"].apply(normalize_job_type)
@@ -679,23 +636,11 @@ def insert_many(df: pd.DataFrame) -> int:
             f"""
             INSERT INTO {TABLE_NAME}
               (
-                work_date,
-                job_id,
-                category,
-                vehicle_description,
-                vehicle_reg,
-                collection_from,
-                delivery_to,
-                amount,
-                job_expenses,
-                expenses_amount,
-                auth_code,
-                job_status,
-                waiting_time,
-                waiting_hours,
-                waiting_amount,
-                description,
-                hours
+                work_date, job_id, category,
+                vehicle_description, vehicle_reg, collection_from, delivery_to,
+                amount, job_expenses, expenses_amount, auth_code, job_status,
+                waiting_time, waiting_hours, waiting_amount,
+                description, hours
               )
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
@@ -744,13 +689,9 @@ def insert_many(df: pd.DataFrame) -> int:
 
 
 # =========================
-# Duplicate tools (WORKING)
+# Dedupe logic
 # =========================
 def count_exact_duplicates() -> int:
-    """
-    Returns how many duplicate rows exist beyond the first copy.
-    Example: if there are 3 identical rows, duplicates = 2.
-    """
     with get_conn() as conn:
         row = conn.execute(
             f"""
@@ -780,7 +721,6 @@ def count_exact_duplicates() -> int:
 
 
 def delete_duplicates_exact() -> int:
-    """Deletes exact duplicates; returns number deleted."""
     with get_conn() as conn:
         before = conn.execute(f"SELECT COUNT(*) FROM {TABLE_NAME}").fetchone()[0]
         conn.execute(
@@ -811,6 +751,115 @@ def delete_duplicates_exact() -> int:
         return int(before - after)
 
 
+def count_smart_duplicates() -> int:
+    """Duplicates by (work_date, job_id) beyond the first row."""
+    with get_conn() as conn:
+        row = conn.execute(
+            f"""
+            SELECT COALESCE(SUM(cnt - 1), 0)
+            FROM (
+                SELECT COUNT(*) AS cnt
+                FROM {TABLE_NAME}
+                GROUP BY COALESCE(work_date,''), COALESCE(job_id,'')
+                HAVING COUNT(*) > 1
+            )
+            """
+        ).fetchone()
+        return int(row[0] or 0)
+
+
+def _row_completeness_score_df(df: pd.DataFrame) -> pd.Series:
+    """
+    Higher score = more complete row.
+    We prefer rows with vehicle_reg, locations, amount, status, etc.
+    """
+    def filled(s: pd.Series) -> pd.Series:
+        return s.fillna("").astype(str).str.strip().ne("")
+
+    score = pd.Series(0, index=df.index, dtype="int64")
+    score += filled(df["vehicle_reg"]).astype(int) * 3
+    score += filled(df["vehicle_description"]).astype(int) * 2
+    score += filled(df["collection_from"]).astype(int) * 2
+    score += filled(df["delivery_to"]).astype(int) * 2
+    score += filled(df["auth_code"]).astype(int) * 2
+    score += filled(df["job_status"]).astype(int) * 1
+    score += pd.to_numeric(df["amount"], errors="coerce").fillna(0).gt(0).astype(int) * 2
+    score += pd.to_numeric(df["expenses_amount"], errors="coerce").fillna(0).gt(0).astype(int) * 1
+    score += filled(df["waiting_time"]).astype(int) * 1
+    return score
+
+
+def delete_duplicates_smart() -> int:
+    """
+    Smart dedupe: for each (work_date, job_id) keep the most complete row.
+    Deletes the rest.
+    """
+    with get_conn() as conn:
+        df = pd.read_sql_query(
+            f"SELECT id, work_date, job_id, category, job_status, vehicle_description, vehicle_reg, collection_from, delivery_to, amount, job_expenses, expenses_amount, auth_code, waiting_time FROM {TABLE_NAME}",
+            conn,
+        )
+
+    if df.empty:
+        return 0
+
+    df["job_id"] = df["job_id"].apply(clean_job_number)
+    df["work_date"] = df["work_date"].fillna("").astype(str).str.strip()
+
+    # only groups that have duplicates
+    grp = df.groupby(["work_date", "job_id"]).size().reset_index(name="cnt")
+    grp = grp[(grp["work_date"] != "") & (grp["job_id"] != "") & (grp["cnt"] > 1)]
+    if grp.empty:
+        return 0
+
+    df["score"] = _row_completeness_score_df(df)
+
+    # Keep: highest score, tie -> smallest id
+    df_sorted = df.sort_values(["work_date", "job_id", "score", "id"], ascending=[True, True, False, True])
+    keep = df_sorted.drop_duplicates(["work_date", "job_id"], keep="first")
+    keep_ids = set(keep["id"].astype(int).tolist())
+
+    # Delete other ids only within duplicate groups
+    dup_keys = set(map(tuple, grp[["work_date", "job_id"]].values.tolist()))
+    to_delete = df[df.apply(lambda r: (r["work_date"], r["job_id"]) in dup_keys and int(r["id"]) not in keep_ids, axis=1)]
+    del_ids = to_delete["id"].astype(int).tolist()
+    if not del_ids:
+        return 0
+
+    with get_conn() as conn:
+        before = conn.execute(f"SELECT COUNT(*) FROM {TABLE_NAME}").fetchone()[0]
+        conn.executemany(f"DELETE FROM {TABLE_NAME} WHERE id = ?", [(i,) for i in del_ids])
+        conn.commit()
+        after = conn.execute(f"SELECT COUNT(*) FROM {TABLE_NAME}").fetchone()[0]
+    return int(before - after)
+
+
+def dedup_for_reporting(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    For KPI/weekly totals: dedupe by (work_date, job_id) keeping the most complete row.
+    """
+    if df.empty:
+        return df
+    d = df.copy()
+    d["work_date_str"] = d["work_date"].astype(str)
+    d["job_id"] = d["job_id"].apply(clean_job_number)
+    d["score"] = _row_completeness_score_df(d)
+
+    d = d.sort_values(["work_date_str", "job_id", "score", "id"], ascending=[True, True, False, True])
+    d = d.drop_duplicates(["work_date_str", "job_id"], keep="first")
+    return d.drop(columns=["work_date_str", "score"], errors="ignore")
+
+
+# =========================
+# Version
+# =========================
+def get_live_version() -> str:
+    try:
+        return subprocess.check_output(["git", "rev-parse", "--short", "HEAD"]).decode().strip()
+    except Exception:
+        return "unknown"
+
+
 # =========================
 # Streamlit UI
 # =========================
@@ -819,36 +868,36 @@ st.title(APP_TITLE)
 
 ensure_schema()
 
-# Session state for stable edit behaviour
 if "edit_selected_job" not in st.session_state:
     st.session_state.edit_selected_job = ""
 if "edit_selected_row_id" not in st.session_state:
     st.session_state.edit_selected_row_id = None
 if "edit_nonce" not in st.session_state:
-    st.session_state.edit_nonce = 0  # used to force reset widgets after save
-
-# Version number in UI (commit hash)
-def get_live_version() -> str:
-    try:
-        return subprocess.check_output(["git", "rev-parse", "--short", "HEAD"]).decode().strip()
-    except Exception:
-        return "unknown"
-
+    st.session_state.edit_nonce = 0
 
 with st.sidebar:
     st.header("Actions")
 
-    # Duplicates status + delete
-    dupes = count_exact_duplicates()
-    st.caption(f"Exact duplicates found: {dupes}")
+    exact_dupes = count_exact_duplicates()
+    smart_dupes = count_smart_duplicates()
 
+    st.caption(f"Exact duplicates found: {exact_dupes}")
     if st.button("Delete exact duplicates"):
         try:
             deleted = delete_duplicates_exact()
-            st.success(f"Deleted {deleted} duplicate rows.")
+            st.success(f"Deleted {deleted} exact duplicate rows.")
             st.rerun()
         except Exception as e:
             st.error(f"Delete failed: {e}")
+
+    st.caption(f"Duplicates by Date+Job found: {smart_dupes}")
+    if st.button("Smart delete duplicates (Date + Job)"):
+        try:
+            deleted = delete_duplicates_smart()
+            st.success(f"Deleted {deleted} duplicates (kept most complete row).")
+            st.rerun()
+        except Exception as e:
+            st.error(f"Smart delete failed: {e}")
 
     if st.button("Refresh data"):
         st.rerun()
@@ -877,10 +926,7 @@ with st.sidebar:
         end_d = date_val
 
     status_filter = st.multiselect("Job status", options=STATUS_OPTIONS, default=STATUS_OPTIONS)
-    search_txt = st.text_input(
-        "Search (job number / vehicle reg / auth code / locations)",
-        value="",
-    ).strip()
+    search_txt = st.text_input("Search (job / reg / auth / locations)", value="").strip()
 
 df = df_all.copy()
 if not df.empty:
@@ -930,7 +976,8 @@ with tab1:
                 st.write(f"Waiting: **{w_norm}** | Hours: **{w_hours:.2f}** | Owed: **£{(w_hours*WAITING_RATE):.2f}**")
 
     if st.button("Save entry"):
-        if str(job_number).strip() == "":
+        jn = clean_job_number(job_number)
+        if jn == "":
             st.error("job number is required.")
         elif waiting_time_raw.strip() and w_hours is None:
             st.error("Fix waiting time format before saving.")
@@ -938,7 +985,7 @@ with tab1:
             try:
                 insert_row(
                     work_date_val=work_date_val,
-                    job_number=job_number,
+                    job_number=jn,
                     job_type=job_type,
                     vehicle_description=vehicle_description,
                     vehicle_reg=vehicle_reg,
@@ -960,8 +1007,8 @@ with tab1:
 with tab2:
     st.subheader("Upload Excel/CSV")
     st.write(
-        "Required columns: **Date** (or `work_date`) and **job number** (or `job_id`/`job_number`). "
-        "Optional: job type, vehicle fields, job amount, job expenses, expenses amount, auth code, job status, waiting time."
+        "Required: **Date** (or `work_date`) and **job number** (or `job_id`/`job_number`). "
+        "Optional: job type, vehicle fields, amounts, auth code, status, waiting time."
     )
 
     up = st.file_uploader("Choose a file", type=["xlsx", "xls", "csv"])
@@ -969,7 +1016,6 @@ with tab2:
         try:
             up_df = pd.read_csv(up) if up.name.lower().endswith(".csv") else pd.read_excel(up)
             st.dataframe(up_df.head(30), use_container_width=True)
-
             if st.button("Import into database"):
                 n = insert_many(up_df)
                 st.success(f"Imported {n} rows.")
@@ -984,23 +1030,23 @@ with tab3:
     if df.empty:
         st.info("No records in this range.")
     else:
-        total_job = df["amount"].fillna(0).sum()
-        total_exp = df["expenses_amount"].fillna(0).sum()
-        total_wait = df["waiting_amount"].fillna(0).sum()
+        # IMPORTANT: use deduped rows for totals
+        report_df = dedup_for_reporting(df)
+
+        total_job = pd.to_numeric(report_df["amount"], errors="coerce").fillna(0).sum()
+        total_exp = pd.to_numeric(report_df["expenses_amount"], errors="coerce").fillna(0).sum()
+        total_wait = pd.to_numeric(report_df["waiting_amount"], errors="coerce").fillna(0).sum()
 
         k1, k2, k3, k4 = st.columns(4)
-        k1.metric("Rows", f"{len(df):,}")
-        k2.metric("Job amount", f"£{total_job:,.2f}")
-        k3.metric("Expenses amount", f"£{total_exp:,.2f}")
-        k4.metric("Waiting owed", f"£{total_wait:,.2f}")
+        k1.metric("Rows (filtered)", f"{len(df):,}")
+        k2.metric("Job amount (deduped)", f"£{total_job:,.2f}")
+        k3.metric("Expenses (deduped)", f"£{total_exp:,.2f}")
+        k4.metric("Waiting owed (deduped)", f"£{total_wait:,.2f}")
 
         st.divider()
         st.markdown("## Edit (select a job number and save)")
-        st.caption("After save, the form resets cleanly and is ready for the next edit.")
 
-        # Use ALL jobs so filters don't hide editable items
-        all_jobs = sorted([jn for jn in df_all["job_id"].dropna().astype(str).str.strip().unique().tolist() if jn])
-
+        all_jobs = sorted([jn for jn in df_all["job_id"].dropna().astype(str).unique().tolist() if jn])
         if not all_jobs:
             st.info("No job numbers found.")
         else:
@@ -1019,7 +1065,6 @@ with tab3:
             if matches.empty:
                 st.error("Could not load that job number from the database.")
             else:
-                # Pick row if multiple
                 if len(matches) > 1:
                     m2 = matches.copy()
                     m2["work_date_str"] = m2["work_date"].astype(str)
@@ -1028,7 +1073,6 @@ with tab3:
                         axis=1,
                     )
                     labels = m2["pick_label"].tolist()
-
                     default_label = labels[0]
                     if st.session_state.edit_selected_row_id is not None:
                         hit = m2[m2["id"].astype(int) == int(st.session_state.edit_selected_row_id)]
@@ -1048,11 +1092,10 @@ with tab3:
                 row_id = int(picked_row["id"])
                 st.session_state.edit_selected_row_id = row_id
 
-                # Current values
                 cur_date_series = to_clean_date_series(pd.Series([picked_row.get("work_date")]))
                 cur_date = cur_date_series.iloc[0] if isinstance(cur_date_series.iloc[0], date) else date.today()
 
-                cur_job_number = str(picked_row.get("job_id") or "").strip()
+                cur_job_number = clean_job_number(picked_row.get("job_id"))
                 cur_job_type = normalize_job_type(picked_row.get("category"))
                 cur_vdesc = str(picked_row.get("vehicle_description") or "").strip()
                 cur_vreg = str(picked_row.get("vehicle_reg") or "").strip()
@@ -1065,7 +1108,6 @@ with tab3:
                 cur_status = normalize_status(picked_row.get("job_status"))
                 cur_waiting = str(picked_row.get("waiting_time") or "").strip()
 
-                # IMPORTANT: nonce forces Streamlit to rebuild widgets after save
                 nonce = st.session_state.edit_nonce
                 form_key = f"edit_form_{row_id}_{nonce}"
 
@@ -1096,47 +1138,39 @@ with tab3:
                         wh, wn = parse_waiting_time(new_waiting_raw)
                         if new_waiting_raw.strip():
                             if wh is None:
-                                st.error("Waiting time format invalid. Use like 10-12 or 10:30-12:15.")
+                                st.error("Waiting time format invalid.")
                             else:
                                 st.write(f"Waiting: **{wn}** | Hours: **{wh:.2f}** | Owed: **£{(wh*WAITING_RATE):.2f}**")
 
                     save = st.form_submit_button("Save changes")
-
                     if save:
-                        if str(new_job_number).strip() == "":
+                        jn = clean_job_number(new_job_number)
+                        if jn == "":
                             st.error("job number is required.")
                         elif new_waiting_raw.strip() and wh is None:
                             st.error("Fix waiting time format before saving.")
                         else:
-                            try:
-                                update_row_by_id(
-                                    row_id=row_id,
-                                    work_date_val=new_date,
-                                    job_number=new_job_number,
-                                    job_type=new_job_type,
-                                    vehicle_description=new_vdesc,
-                                    vehicle_reg=new_vreg,
-                                    collection_from=new_from,
-                                    delivery_to=new_to,
-                                    job_amount=float(new_job_amount) if new_job_amount is not None else None,
-                                    job_expenses=new_job_expenses,
-                                    expenses_amount=float(new_exp_amt) if new_exp_amt is not None else None,
-                                    auth_code=new_auth,
-                                    job_status=new_status,
-                                    waiting_time_raw=new_waiting_raw,
-                                )
-
-                                # Keep selection for next edit
-                                st.session_state.edit_selected_job = str(new_job_number).strip()
-                                st.session_state.edit_selected_row_id = row_id
-
-                                # Force form to rebuild (prevents sticky values)
-                                st.session_state.edit_nonce += 1
-
-                                st.success("Updated.")
-                                st.rerun()
-                            except Exception as e:
-                                st.error(f"Update failed: {e}")
+                            update_row_by_id(
+                                row_id=row_id,
+                                work_date_val=new_date,
+                                job_number=jn,
+                                job_type=new_job_type,
+                                vehicle_description=new_vdesc,
+                                vehicle_reg=new_vreg,
+                                collection_from=new_from,
+                                delivery_to=new_to,
+                                job_amount=float(new_job_amount),
+                                job_expenses=new_job_expenses,
+                                expenses_amount=float(new_exp_amt),
+                                auth_code=new_auth,
+                                job_status=new_status,
+                                waiting_time_raw=new_waiting_raw,
+                            )
+                            st.session_state.edit_selected_job = jn
+                            st.session_state.edit_selected_row_id = row_id
+                            st.session_state.edit_nonce += 1  # force refresh
+                            st.success("Updated.")
+                            st.rerun()
 
         st.divider()
         st.subheader("Records (view only) — strict column order")
@@ -1166,9 +1200,9 @@ with tab3:
         st.dataframe(view_df[UI_COLUMNS], use_container_width=True, hide_index=True)
 
         st.divider()
-        st.subheader("Weekly summary")
+        st.subheader("Weekly summary (deduped by Date+Job)")
 
-        dfw = df.copy()
+        dfw = report_df.copy()
         dfw["week_start"] = dfw["work_date"].apply(week_start)
 
         weekly = (
@@ -1183,9 +1217,9 @@ with tab3:
         )
 
         for c in ["job_amount", "expenses_amount", "waiting_owed"]:
-            weekly[c] = weekly[c].fillna(0)
-        weekly["total_owed"] = weekly["job_amount"] + weekly["waiting_owed"]
+            weekly[c] = pd.to_numeric(weekly[c], errors="coerce").fillna(0)
 
+        weekly["total_owed"] = weekly["job_amount"] + weekly["waiting_owed"]
         st.dataframe(weekly, use_container_width=True, hide_index=True)
 
         csv_bytes = view_df[UI_COLUMNS].to_csv(index=False).encode("utf-8")
