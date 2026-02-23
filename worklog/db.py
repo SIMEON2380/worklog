@@ -1,7 +1,7 @@
 import os
 import re
 import sqlite3
-from typing import Dict, Any, Tuple
+from typing import Dict, Any, Tuple, List
 
 import pandas as pd
 
@@ -97,15 +97,9 @@ def ensure_schema():
                 conn.execute(f"ALTER TABLE {TABLE_NAME} ADD COLUMN {col} {col_type}")
         conn.commit()
 
-        conn.execute(
-            f"CREATE INDEX IF NOT EXISTS idx_{TABLE_NAME}_work_date ON {TABLE_NAME}(work_date)"
-        )
-        conn.execute(
-            f"CREATE INDEX IF NOT EXISTS idx_{TABLE_NAME}_job_id ON {TABLE_NAME}(job_id)"
-        )
-        conn.execute(
-            f"CREATE INDEX IF NOT EXISTS idx_{TABLE_NAME}_status ON {TABLE_NAME}(job_status)"
-        )
+        conn.execute(f"CREATE INDEX IF NOT EXISTS idx_{TABLE_NAME}_work_date ON {TABLE_NAME}(work_date)")
+        conn.execute(f"CREATE INDEX IF NOT EXISTS idx_{TABLE_NAME}_job_id ON {TABLE_NAME}(job_id)")
+        conn.execute(f"CREATE INDEX IF NOT EXISTS idx_{TABLE_NAME}_status ON {TABLE_NAME}(job_status)")
         conn.commit()
 
         # unique protection for future duplicates
@@ -120,9 +114,7 @@ def ensure_schema():
 
 def read_all() -> pd.DataFrame:
     with get_conn() as conn:
-        return pd.read_sql_query(
-            f"SELECT * FROM {TABLE_NAME} ORDER BY work_date DESC, id DESC", conn
-        )
+        return pd.read_sql_query(f"SELECT * FROM {TABLE_NAME} ORDER BY work_date DESC, id DESC", conn)
 
 
 def update_status_for_year(year: int, new_status: str = "Paid") -> int:
@@ -148,24 +140,28 @@ def backfill_from_dataframe(df: pd.DataFrame) -> Tuple[int, int]:
     """
     Backfill missing fields by matching (work_date, job_id).
 
-    Default behavior:
-      - Updates ONLY when DB value is empty/NULL.
+    Default:
+      - Only fills fields that are empty in DB.
 
-    Upgrade behavior (NEW):
-      - For collection_from / delivery_to, if DB has NO postcode but the incoming value DOES,
-        we update (upgrade) the DB field to include the postcode.
+    Upgrade behavior:
+      - For collection_from / delivery_to:
+        if DB value has NO postcode but incoming value DOES, update (upgrade) it.
 
-    Returns (matched_rows, updated_rows).
+    Robustness (IMPORTANT):
+      - Some sheets have the job number in different columns on different rows
+        (e.g. Job Number contains 'Std Trade Plate' and the real number is in Job type).
+      - We therefore pick job_id PER ROW by trying multiple candidate columns.
     """
     if df is None or df.empty:
         return 0, 0
 
-    # common-enough UK postcode pattern (practical, not perfect)
+    # Practical UK postcode matcher (accepts no-space postcodes too)
     UK_POSTCODE_RE = re.compile(r"\b[A-Z]{1,2}\d{1,2}[A-Z]?\s*\d[A-Z]{2}\b", re.I)
 
     def has_postcode(s: str) -> bool:
         return bool(UK_POSTCODE_RE.search(str(s or "").upper()))
 
+    # Map normalized column names -> real column names
     cols_lower = {str(c).lower().strip(): c for c in df.columns}
 
     def pick(*names):
@@ -175,34 +171,79 @@ def backfill_from_dataframe(df: pd.DataFrame) -> Tuple[int, int]:
                 return cols_lower[k]
         return None
 
+    # Required-ish: Date
     c_date = pick("date", "work_date")
-    c_job = pick("job number", "job_number", "job_id", "jobid", "job")
-    if c_date is None or c_job is None:
-        raise ValueError("Backfill file must include Date and job number columns.")
+    if c_date is None:
+        raise ValueError("Backfill file must include a Date/work_date column.")
 
-    c_vdesc = pick("vehcile description", "vehicle description", "vehicle_description")
-    c_vreg = pick("vehicle reg", "vehicle_reg", "vehicle Reg")
-    c_from = pick("collection from", "collection_from", "from", "from_loc", "pickup", "pickup_from")
-    c_to = pick("delivery to", "delivery_to", "to", "to_loc", "dropoff", "dropoff_to")
-    c_auth = pick("auth code", "auth_code", "Auth code")
-    c_status = pick("job status", "job_status", "status")
-    c_comments = pick("comments", "comment", "notes", "note")
-    c_job_type = pick("job type", "job_type", "category")
-    c_exp_type = pick("job expenses", "job_expenses", "Job Expenses")
-    c_amt = pick("job amount", "amount", "job_amount")
-    c_exp_amt = pick("expenses amount", "expenses_amount", "expenses Amount")
-    c_waiting = pick("waiting time", "waiting_time", "waiting")
+    # Candidates for job id (we'll try multiple PER ROW)
+    c_job = pick("job number", "job_number", "job_id", "jobid", "job no", "job")
+    c_job_type = pick("job type", "job_type", "category", "Job type")
 
-    # normalize inputs
+    # Also include any column that smells like it might hold an ID
+    def guess_jobid_candidates(columns: List[str]) -> List[str]:
+        out = []
+        for c in columns:
+            cl = str(c).lower()
+            if "job" in cl or "order" in cl:
+                out.append(c)
+        return out
+
+    guessed = guess_jobid_candidates(list(df.columns))
+
+    # Ordered, de-duped candidate list
+    jobid_candidates = []
+    for c in [c_job, c_job_type, *guessed]:
+        if c and c not in jobid_candidates:
+            jobid_candidates.append(c)
+
+    if not jobid_candidates:
+        raise ValueError("Backfill file must include a job number column (Job Number / job_number / job_id).")
+
+    # Other fields (support BCA-style headers too)
+    c_vdesc = pick("vehcile description", "vehicle description", "vehicle_description", "Vehicle description", "job")
+    c_vreg = pick("vehicle reg", "vehicle_reg", "vehicle Reg", "Vehicle Reg", "reg", "Reg", "registration")
+
+    c_from = pick("collection from", "collection_from", "from", "From", "from_loc", "pickup", "pickup_from")
+    c_to = pick("delivery to", "delivery_to", "to", "To", "to_loc", "dropoff", "dropoff_to")
+
+    c_auth = pick("auth code", "auth_code", "Auth code", "AUTH CODE")
+    c_status = pick("job status", "job_status", "status", "Job Status")
+    c_comments = pick("comments", "comment", "notes", "note", "Comments")
+
+    c_cat = pick("job type", "job_type", "category", "Job type")
+    c_exp_type = pick("job expenses", "job_expenses", "Job Expenses", "Expense type")
+
+    c_amt = pick("job amount", "amount", "job_amount", "Job Amount", "Amount")
+    c_exp_amt = pick("expenses amount", "expenses_amount", "expenses Amount", "Expenses", "Expense Amount")
+    c_waiting = pick("waiting time", "waiting_time", "waiting", "claimed", "Claimed")
+
     d = df.copy()
+
+    # Date normalize
     d["work_date"] = pd.to_datetime(d[c_date], errors="coerce").dt.date
-    d["job_id"] = d[c_job].apply(clean_job_number)
-    d = d[d["work_date"].notna() & (d["job_id"] != "")].copy()
+    d = d[d["work_date"].notna()].copy()
+    if d.empty:
+        return 0, 0
+
+    # Build job_id PER ROW (this is the key fix)
+    def pick_job_id_for_row(row) -> str:
+        for col in jobid_candidates:
+            try:
+                v = clean_job_number(row.get(col, ""))
+            except Exception:
+                v = ""
+            if str(v).strip():
+                return str(v).strip()
+        return ""
+
+    d["job_id"] = d.apply(pick_job_id_for_row, axis=1)
+    d = d[d["job_id"].astype(str).str.strip() != ""].copy()
     if d.empty:
         return 0, 0
 
     def get_str(colname, upper=False):
-        if colname is None:
+        if colname is None or colname not in d.columns:
             return ""
         s = d[colname].fillna("").astype(str).str.strip()
         return s.str.upper() if upper else s
@@ -214,25 +255,24 @@ def backfill_from_dataframe(df: pd.DataFrame) -> Tuple[int, int]:
     d["auth_code"] = get_str(c_auth)
     d["comments"] = get_str(c_comments)
 
-    if c_status:
+    if c_status and c_status in d.columns:
         d["job_status"] = d[c_status].fillna("").astype(str).str.strip().apply(normalize_status)
     else:
         d["job_status"] = ""
 
-    if c_job_type:
-        d["category"] = d[c_job_type].fillna("").astype(str).str.strip().apply(normalize_job_type)
+    if c_cat and c_cat in d.columns:
+        d["category"] = d[c_cat].fillna("").astype(str).str.strip().apply(normalize_job_type)
     else:
         d["category"] = ""
 
-    if c_exp_type:
+    if c_exp_type and c_exp_type in d.columns:
         d["job_expenses"] = d[c_exp_type].fillna("").astype(str).str.strip().apply(normalize_expense_type)
     else:
         d["job_expenses"] = ""
 
-    # numeric fields optional
-    d["amount"] = pd.to_numeric(d[c_amt], errors="coerce") if c_amt else None
-    d["expenses_amount"] = pd.to_numeric(d[c_exp_amt], errors="coerce") if c_exp_amt else None
-    d["waiting_time"] = d[c_waiting].fillna("").astype(str).str.strip() if c_waiting else ""
+    d["amount"] = pd.to_numeric(d[c_amt], errors="coerce") if (c_amt and c_amt in d.columns) else None
+    d["expenses_amount"] = pd.to_numeric(d[c_exp_amt], errors="coerce") if (c_exp_amt and c_exp_amt in d.columns) else None
+    d["waiting_time"] = d[c_waiting].fillna("").astype(str).str.strip() if (c_waiting and c_waiting in d.columns) else ""
 
     matched = 0
     updated = 0
@@ -240,7 +280,7 @@ def backfill_from_dataframe(df: pd.DataFrame) -> Tuple[int, int]:
     with get_conn() as conn:
         for _, r in d.iterrows():
             wd = r["work_date"].isoformat()
-            jid = r["job_id"]
+            jid = str(r["job_id"]).strip()
 
             row = conn.execute(
                 f"""
@@ -267,14 +307,14 @@ def backfill_from_dataframe(df: pd.DataFrame) -> Tuple[int, int]:
 
             sets: Dict[str, Any] = {}
 
-            # vehicle fields: only fill if empty
+            # Fill if empty
             if is_empty(row[1]) and str(r["vehicle_description"]).strip():
                 sets["vehicle_description"] = str(r["vehicle_description"]).strip().upper()
 
             if is_empty(row[2]) and str(r["vehicle_reg"]).strip():
                 sets["vehicle_reg"] = str(r["vehicle_reg"]).strip()
 
-            # ✅ locations: fill if empty OR upgrade if postcode missing in DB but present in new value
+            # Fill if empty OR upgrade postcode
             old_from = str(row[3] or "").strip()
             new_from = str(r["collection_from"] or "").strip()
             if new_from and (is_empty(old_from) or (not has_postcode(old_from) and has_postcode(new_from))):
@@ -291,15 +331,13 @@ def backfill_from_dataframe(df: pd.DataFrame) -> Tuple[int, int]:
             if is_empty(row[9]) and str(r["comments"]).strip():
                 sets["comments"] = str(r["comments"]).strip()
 
-            # Optional: only backfill status if DB empty
+            # Optional fills (only if empty in DB)
             if is_empty(row[6]) and str(r["job_status"]).strip():
                 sets["job_status"] = str(r["job_status"]).strip()
 
-            # Optional: only backfill job type if DB empty
             if is_empty(row[7]) and str(r["category"]).strip():
                 sets["category"] = str(r["category"]).strip()
 
-            # Optional: only backfill expense type if DB empty
             if is_empty(row[8]) and str(r["job_expenses"]).strip():
                 sets["job_expenses"] = str(r["job_expenses"]).strip()
 
@@ -308,7 +346,6 @@ def backfill_from_dataframe(df: pd.DataFrame) -> Tuple[int, int]:
 
             cols = ", ".join([f"{k} = ?" for k in sets.keys()])
             vals = list(sets.values()) + [row_id]
-
             conn.execute(f"UPDATE {TABLE_NAME} SET {cols} WHERE id = ?", vals)
             updated += 1
 
