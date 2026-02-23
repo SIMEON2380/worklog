@@ -24,7 +24,7 @@ STATUS_OPTIONS = ["Start", "Completed", "Aborted", "Paid", "Pending", "Withdraw"
 JOB_TYPE_OPTIONS = ["STRD Trade Plate", "Inspect and Collect", "Inspect and Collect 2"]
 JOB_EXPENSE_OPTIONS = ["uber", "taxi", "train", "toll", "other"]
 
-# NEW: Inspect & Collect pay rate
+# Inspect & Collect pay rate
 INSPECT_COLLECT_RATE = 8.00
 INSPECT_COLLECT_TYPES = {"Inspect and Collect", "Inspect and Collect 2"}
 
@@ -204,7 +204,6 @@ def ensure_schema():
             )
             conn.commit()
         except Exception:
-            # We'll show a warning in the sidebar after ensure_schema runs.
             pass
 
 
@@ -404,7 +403,6 @@ def read_all() -> pd.DataFrame:
     df["job_expenses"] = df["job_expenses"].fillna("").astype(str).apply(normalize_expense_type)
     df["auth_code"] = df["auth_code"].fillna("").astype(str)
     df["comments"] = df["comments"].fillna("").astype(str)
-
     return df
 
 
@@ -429,6 +427,7 @@ def read_rows_by_job_number(job_number: str) -> pd.DataFrame:
     for c in EXPECTED_DB_COLS:
         if c not in df.columns:
             df[c] = None
+
     df["work_date"] = to_clean_date_series(df["work_date"])
     df["job_id"] = df["job_id"].apply(clean_job_number)
     df["vehicle_description"] = df["vehicle_description"].fillna("").astype(str).str.strip().str.upper()
@@ -472,7 +471,7 @@ def insert_row(
     jt = normalize_job_type(job_type)
     je = normalize_expense_type(job_expenses)
 
-    vdesc = str(vehicle_description or "").strip().upper()  # ALWAYS CAPS
+    vdesc = str(vehicle_description or "").strip().upper()
     vreg = str(vehicle_reg or "").strip()
     cfrom = str(collection_from or "").strip()
     cto = str(delivery_to or "").strip()
@@ -547,7 +546,7 @@ def update_row_by_id(
     jt = normalize_job_type(job_type)
     je = normalize_expense_type(job_expenses)
 
-    vdesc = str(vehicle_description or "").strip().upper()  # ALWAYS CAPS
+    vdesc = str(vehicle_description or "").strip().upper()
     vreg = str(vehicle_reg or "").strip()
     cfrom = str(collection_from or "").strip()
     cto = str(delivery_to or "").strip()
@@ -604,6 +603,10 @@ def update_row_by_id(
 
 
 def insert_many(df: pd.DataFrame) -> int:
+    """
+    Insert-only import.
+    Skips duplicates if Date+Job already exists (unique index).
+    """
     if df is None or df.empty:
         return 0
 
@@ -643,14 +646,14 @@ def insert_many(df: pd.DataFrame) -> int:
     df2["job_type"] = df2[c_job_type].fillna("").astype(str).str.strip() if c_job_type else JOB_TYPE_OPTIONS[0]
     df2["job_type"] = df2["job_type"].apply(normalize_job_type)
 
-    # vehicle description ALWAYS uppercase
     df2["vehicle_description"] = df2[c_vdesc].fillna("").astype(str).str.strip().str.upper() if c_vdesc else ""
     df2["vehicle_reg"] = df2[c_vreg].fillna("").astype(str).str.strip() if c_vreg else ""
     df2["collection_from"] = df2[c_from].fillna("").astype(str).str.strip() if c_from else ""
     df2["delivery_to"] = df2[c_to].fillna("").astype(str).str.strip() if c_to else ""
 
     df2["amount"] = pd.to_numeric(df2[c_amt], errors="coerce") if c_amt else None
-    df2["amount"] = df2["amount"].apply(_zero_to_none) if "amount" in df2.columns else None
+    if "amount" in df2.columns:
+        df2["amount"] = df2["amount"].apply(_zero_to_none)
 
     df2["job_expenses"] = df2[c_exp_type].fillna("other").astype(str).str.strip() if c_exp_type else "other"
     df2["job_expenses"] = df2["job_expenses"].apply(normalize_expense_type)
@@ -763,11 +766,253 @@ def insert_many(df: pd.DataFrame) -> int:
                 )
                 inserted += 1
             except sqlite3.IntegrityError:
-                # Unique constraint hit: (work_date, job_id) already exists -> skip
                 continue
         conn.commit()
 
     return inserted
+
+
+def merge_many_fill_blanks(df: pd.DataFrame) -> int:
+    """
+    Merge import:
+    - match existing row by (work_date, job_id)
+    - if exists: fill ONLY blank DB fields using Excel values
+    - if not exists: insert new row
+    Returns updated+inserted count.
+    """
+    if df is None or df.empty:
+        return 0
+
+    df2 = df.copy()
+    cols_lower = {str(c).lower().strip(): c for c in df2.columns}
+
+    def pick(*names):
+        for n in names:
+            key = str(n).lower().strip()
+            if key in cols_lower:
+                return cols_lower[key]
+        return None
+
+    c_date = pick("date", "work_date")
+    c_job = pick("job number", "job_number", "job_id", "jobid", "job")
+    if c_date is None:
+        raise ValueError("Upload must include Date (or work_date).")
+    if c_job is None:
+        raise ValueError("Upload must include job number (or job_id/job_number).")
+
+    c_job_type = pick("job type", "job_type", "category")
+    c_vdesc = pick("vehcile description", "vehicle description", "vehicle_description")
+    c_vreg = pick("vehicle reg", "vehicle Reg", "vehicle_reg")
+    c_from = pick("collection from", "collection_from")
+    c_to = pick("delivery to", "delivery_to")
+    c_amt = pick("job amount", "job_amount", "amount")
+    c_exp_type = pick("job expenses", "Job Expenses", "job_expenses")
+    c_exp_amt = pick("expenses amount", "expenses Amount", "expenses_amount")
+    c_auth = pick("auth code", "Auth code", "auth_code")
+    c_status = pick("job status", "job_status", "status")
+    c_waiting = pick("waiting time", "waiting_time", "waiting")
+    c_comments = pick("comments", "comment", "notes", "note")
+
+    df2["work_date"] = to_clean_date_series(df2[c_date])
+    df2["job_id"] = df2[c_job].apply(clean_job_number)
+
+    df2["job_type"] = df2[c_job_type].fillna("").astype(str).str.strip() if c_job_type else JOB_TYPE_OPTIONS[0]
+    df2["job_type"] = df2["job_type"].apply(normalize_job_type)
+
+    df2["vehicle_description"] = df2[c_vdesc].fillna("").astype(str).str.strip().str.upper() if c_vdesc else ""
+    df2["vehicle_reg"] = df2[c_vreg].fillna("").astype(str).str.strip() if c_vreg else ""
+    df2["collection_from"] = df2[c_from].fillna("").astype(str).str.strip() if c_from else ""
+    df2["delivery_to"] = df2[c_to].fillna("").astype(str).str.strip() if c_to else ""
+
+    df2["amount"] = pd.to_numeric(df2[c_amt], errors="coerce") if c_amt else None
+    if "amount" in df2.columns:
+        df2["amount"] = df2["amount"].apply(_zero_to_none)
+
+    df2["job_expenses"] = df2[c_exp_type].fillna("other").astype(str).str.strip() if c_exp_type else "other"
+    df2["job_expenses"] = df2["job_expenses"].apply(normalize_expense_type)
+
+    df2["expenses_amount"] = pd.to_numeric(df2[c_exp_amt], errors="coerce") if c_exp_amt else None
+    if "expenses_amount" in df2.columns:
+        df2["expenses_amount"] = df2["expenses_amount"].apply(_zero_to_none)
+
+    df2["auth_code"] = df2[c_auth].fillna("").astype(str).str.strip() if c_auth else ""
+
+    df2["job_status"] = df2[c_status].fillna("Pending").astype(str).str.strip() if c_status else "Pending"
+    df2["job_status"] = df2["job_status"].apply(normalize_status)
+
+    df2["waiting_raw"] = df2[c_waiting].fillna("").astype(str) if c_waiting else ""
+    df2["comments"] = df2[c_comments].fillna("").astype(str).str.strip() if c_comments else ""
+
+    wh_list, wn_list, wa_list = [], [], []
+    for txt in df2["waiting_raw"].tolist():
+        wh, wn = parse_waiting_time(txt)
+        wh_list.append(wh)
+        wn_list.append(wn or "")
+        wa_list.append((wh * WAITING_RATE) if wh is not None else None)
+
+    df2["waiting_hours"] = wh_list
+    df2["waiting_time"] = wn_list
+    df2["waiting_amount"] = wa_list
+
+    df2 = df2[df2["work_date"].notna()].copy()
+    df2 = df2[df2["job_id"] != ""].copy()
+    if df2.empty:
+        return 0
+
+    df2["work_date"] = df2["work_date"].apply(lambda d: d.isoformat() if isinstance(d, date) else None)
+
+    updated = 0
+    inserted = 0
+
+    with get_conn() as conn:
+        for _, r in df2.iterrows():
+            wd = r["work_date"]
+            job_id = r["job_id"]
+
+            jt = r.get("job_type") or JOB_TYPE_OPTIONS[0]
+            vdesc = (r.get("vehicle_description") or "").strip().upper()
+            vreg = (r.get("vehicle_reg") or "").strip()
+            cfrom = (r.get("collection_from") or "").strip()
+            cto = (r.get("delivery_to") or "").strip()
+            amt = r.get("amount")
+            je = r.get("job_expenses") or "other"
+            exp_amt = r.get("expenses_amount")
+            auth = (r.get("auth_code") or "").strip()
+            status = r.get("job_status") or "Pending"
+            wtime = (r.get("waiting_time") or "").strip()
+            wh = r.get("waiting_hours")
+            wa = r.get("waiting_amount")
+            cmts = (r.get("comments") or "").strip()
+
+            cur = conn.execute(
+                f"""
+                SELECT id FROM {TABLE_NAME}
+                WHERE work_date = ? AND job_id = ?
+                ORDER BY id ASC
+                LIMIT 1
+                """,
+                (wd, job_id),
+            ).fetchone()
+
+            if cur:
+                row_id = int(cur[0])
+                conn.execute(
+                    f"""
+                    UPDATE {TABLE_NAME}
+                    SET
+                      category = COALESCE(NULLIF(category,''), ?),
+
+                      vehicle_description = CASE
+                        WHEN COALESCE(TRIM(vehicle_description), '') = '' THEN ?
+                        ELSE vehicle_description END,
+
+                      vehicle_reg = CASE
+                        WHEN COALESCE(TRIM(vehicle_reg), '') = '' THEN ?
+                        ELSE vehicle_reg END,
+
+                      collection_from = CASE
+                        WHEN COALESCE(TRIM(collection_from), '') = '' THEN ?
+                        ELSE collection_from END,
+
+                      delivery_to = CASE
+                        WHEN COALESCE(TRIM(delivery_to), '') = '' THEN ?
+                        ELSE delivery_to END,
+
+                      amount = CASE
+                        WHEN amount IS NULL OR amount = 0 THEN ?
+                        ELSE amount END,
+
+                      job_expenses = CASE
+                        WHEN COALESCE(TRIM(job_expenses), '') = '' THEN ?
+                        ELSE job_expenses END,
+
+                      expenses_amount = CASE
+                        WHEN expenses_amount IS NULL OR expenses_amount = 0 THEN ?
+                        ELSE expenses_amount END,
+
+                      auth_code = CASE
+                        WHEN COALESCE(TRIM(auth_code), '') = '' THEN ?
+                        ELSE auth_code END,
+
+                      job_status = COALESCE(NULLIF(job_status,''), ?),
+
+                      waiting_time = CASE
+                        WHEN COALESCE(TRIM(waiting_time), '') = '' THEN ?
+                        ELSE waiting_time END,
+
+                      waiting_hours = CASE
+                        WHEN waiting_hours IS NULL OR waiting_hours = 0 THEN ?
+                        ELSE waiting_hours END,
+
+                      waiting_amount = CASE
+                        WHEN waiting_amount IS NULL OR waiting_amount = 0 THEN ?
+                        ELSE waiting_amount END,
+
+                      comments = CASE
+                        WHEN COALESCE(TRIM(comments), '') = '' THEN ?
+                        ELSE comments END
+
+                    WHERE id = ?
+                    """,
+                    (
+                        jt,
+                        vdesc,
+                        vreg,
+                        cfrom,
+                        cto,
+                        amt,
+                        je,
+                        exp_amt,
+                        auth,
+                        status,
+                        wtime,
+                        wh,
+                        wa,
+                        cmts,
+                        row_id,
+                    ),
+                )
+                updated += 1
+            else:
+                conn.execute(
+                    f"""
+                    INSERT INTO {TABLE_NAME}
+                      (
+                        work_date, job_id, category,
+                        vehicle_description, vehicle_reg, collection_from, delivery_to,
+                        amount, job_expenses, expenses_amount, auth_code, job_status,
+                        waiting_time, waiting_hours, waiting_amount,
+                        description, hours,
+                        comments
+                      )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        wd,
+                        job_id,
+                        jt,
+                        vdesc,
+                        vreg,
+                        cfrom,
+                        cto,
+                        amt,
+                        je,
+                        exp_amt,
+                        auth,
+                        status,
+                        wtime,
+                        wh,
+                        wa,
+                        "",
+                        None,
+                        cmts,
+                    ),
+                )
+                inserted += 1
+
+        conn.commit()
+
+    return updated + inserted
 
 
 # =========================
@@ -836,7 +1081,6 @@ def delete_duplicates_exact() -> int:
 
 
 def count_smart_duplicates() -> int:
-    """Duplicates by (work_date, job_id) beyond the first row."""
     with get_conn() as conn:
         row = conn.execute(
             f"""
@@ -853,10 +1097,6 @@ def count_smart_duplicates() -> int:
 
 
 def _row_completeness_score_df(df: pd.DataFrame) -> pd.Series:
-    """
-    Higher score = more complete row.
-    We prefer rows with vehicle_reg, locations, amount, status, etc.
-    """
     def filled(s: pd.Series) -> pd.Series:
         return s.fillna("").astype(str).str.strip().ne("")
 
@@ -867,18 +1107,26 @@ def _row_completeness_score_df(df: pd.DataFrame) -> pd.Series:
     score += filled(df.get("delivery_to", pd.Series("", index=df.index))).astype(int) * 2
     score += filled(df.get("auth_code", pd.Series("", index=df.index))).astype(int) * 2
     score += filled(df.get("job_status", pd.Series("", index=df.index))).astype(int) * 1
-    score += pd.to_numeric(df.get("amount", pd.Series(0, index=df.index)), errors="coerce").fillna(0).gt(0).astype(int) * 2
-    score += pd.to_numeric(df.get("expenses_amount", pd.Series(0, index=df.index)), errors="coerce").fillna(0).gt(0).astype(int) * 1
+    score += (
+        pd.to_numeric(df.get("amount", pd.Series(0, index=df.index)), errors="coerce")
+        .fillna(0)
+        .gt(0)
+        .astype(int)
+        * 2
+    )
+    score += (
+        pd.to_numeric(df.get("expenses_amount", pd.Series(0, index=df.index)), errors="coerce")
+        .fillna(0)
+        .gt(0)
+        .astype(int)
+        * 1
+    )
     score += filled(df.get("waiting_time", pd.Series("", index=df.index))).astype(int) * 1
     score += filled(df.get("comments", pd.Series("", index=df.index))).astype(int) * 1
     return score
 
 
 def delete_duplicates_smart() -> int:
-    """
-    Smart dedupe: for each (work_date, job_id) keep the most complete row.
-    Deletes the rest.
-    """
     with get_conn() as conn:
         df = pd.read_sql_query(
             f"""
@@ -897,21 +1145,22 @@ def delete_duplicates_smart() -> int:
     df["job_id"] = df["job_id"].apply(clean_job_number)
     df["work_date"] = df["work_date"].fillna("").astype(str).str.strip()
 
-    # only groups that have duplicates
     grp = df.groupby(["work_date", "job_id"]).size().reset_index(name="cnt")
     grp = grp[(grp["work_date"] != "") & (grp["job_id"] != "") & (grp["cnt"] > 1)]
     if grp.empty:
         return 0
 
     df["score"] = _row_completeness_score_df(df)
-
-    # Keep: highest score, tie -> smallest id
     df_sorted = df.sort_values(["work_date", "job_id", "score", "id"], ascending=[True, True, False, True])
     keep = df_sorted.drop_duplicates(["work_date", "job_id"], keep="first")
     keep_ids = set(keep["id"].astype(int).tolist())
 
     dup_keys = set(map(tuple, grp[["work_date", "job_id"]].values.tolist()))
-    to_delete = df[df.apply(lambda r: (r["work_date"], r["job_id"]) in dup_keys and int(r["id"]) not in keep_ids, axis=1)]
+    to_delete = df[
+        df.apply(
+            lambda r: (r["work_date"], r["job_id"]) in dup_keys and int(r["id"]) not in keep_ids, axis=1
+        )
+    ]
     del_ids = to_delete["id"].astype(int).tolist()
     if not del_ids:
         return 0
@@ -925,29 +1174,50 @@ def delete_duplicates_smart() -> int:
 
 
 def dedup_for_reporting(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    For KPI/weekly totals: dedupe by (work_date, job_id) keeping the most complete row.
-    """
     if df.empty:
         return df
     d = df.copy()
     d["work_date_str"] = d["work_date"].astype(str)
     d["job_id"] = d["job_id"].apply(clean_job_number)
     d["score"] = _row_completeness_score_df(d)
-
     d = d.sort_values(["work_date_str", "job_id", "score", "id"], ascending=[True, True, False, True])
     d = d.drop_duplicates(["work_date_str", "job_id"], keep="first")
     return d.drop(columns=["work_date_str", "score"], errors="ignore")
 
 
 def filter_money_rows(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Removes NON_PAYABLE_STATUSES (withdraw + aborted) from money totals.
-    """
     if df.empty:
         return df
     s = df["job_status"].fillna("").astype(str).str.lower().str.strip()
     return df[~s.isin(NON_PAYABLE_STATUSES)].copy()
+
+
+def mark_2025_jobs_paid() -> int:
+    """
+    Bulk update: set all jobs in 2025 to Paid.
+    Returns count of rows that were NOT already Paid.
+    """
+    with get_conn() as conn:
+        n = conn.execute(
+            f"""
+            SELECT COUNT(*) FROM {TABLE_NAME}
+            WHERE work_date >= '2025-01-01'
+              AND work_date <= '2025-12-31'
+              AND COALESCE(TRIM(job_status),'') != 'Paid'
+            """
+        ).fetchone()[0]
+
+        conn.execute(
+            f"""
+            UPDATE {TABLE_NAME}
+            SET job_status = 'Paid'
+            WHERE work_date >= '2025-01-01'
+              AND work_date <= '2025-12-31'
+            """
+        )
+        conn.commit()
+
+    return int(n or 0)
 
 
 # =========================
@@ -961,13 +1231,10 @@ def get_live_version() -> str:
 
 
 def unique_index_ok() -> bool:
-    """
-    Check if unique index exists.
-    """
     try:
         with get_conn() as conn:
             rows = conn.execute(f"PRAGMA index_list({TABLE_NAME})").fetchall()
-            names = {r[1] for r in rows}  # (seq, name, unique, origin, partial)
+            names = {r[1] for r in rows}
             return f"uq_{TABLE_NAME}_date_job" in names
     except Exception:
         return False
@@ -991,7 +1258,6 @@ if "edit_nonce" not in st.session_state:
 with st.sidebar:
     st.header("Actions")
 
-    # Unique index status (prevents new duplicates)
     if unique_index_ok():
         st.success("Duplicate protection: ON (Date + Job)")
     else:
@@ -1023,6 +1289,16 @@ with st.sidebar:
 
     if st.button("Refresh data"):
         st.rerun()
+
+    st.divider()
+    st.subheader("Bulk actions")
+    if st.button("Mark ALL 2025 jobs as Paid"):
+        try:
+            n = mark_2025_jobs_paid()
+            st.success(f"{n} job(s) updated to Paid (2025).")
+            st.rerun()
+        except Exception as e:
+            st.error(f"Bulk update failed: {e}")
 
     st.divider()
     st.caption("DB in use:")
@@ -1077,7 +1353,9 @@ with tab1:
         work_date_val = st.date_input("Date", value=date.today(), key="add_date")
         job_number = st.text_input("job number (required)", key="add_job_number")
         job_type = st.selectbox("job type", JOB_TYPE_OPTIONS, index=0, key="add_job_type")
-        job_status = st.selectbox("job status", STATUS_OPTIONS, index=STATUS_OPTIONS.index("Pending"), key="add_job_status")
+        job_status = st.selectbox(
+            "job status", STATUS_OPTIONS, index=STATUS_OPTIONS.index("Pending"), key="add_job_status"
+        )
     with c2:
         vehicle_description = st.text_input("vehcile description", key="add_vdesc")
         vehicle_reg = st.text_input("vehicle Reg", key="add_vreg")
@@ -1085,19 +1363,22 @@ with tab1:
         collection_from = st.text_input("collection from", key="add_from")
         delivery_to = st.text_input("delivery to", key="add_to")
     with c4:
-        # keep UI stable, but convert zeros to NULL in DB
         job_amount = st.number_input("job amount", step=0.5, value=0.0, key="add_amount")
         job_expenses = st.selectbox("Job Expenses", JOB_EXPENSE_OPTIONS, index=0, key="add_exp_type")
         expenses_amount = st.number_input("expenses Amount", step=0.5, value=0.0, key="add_exp_amt")
         auth_code = st.text_input("Auth code", key="add_auth")
-        waiting_time_raw = st.text_input("waiting time (e.g. 10-12 or 10:30-12:15)", value="", key="add_waiting")
+        waiting_time_raw = st.text_input(
+            "waiting time (e.g. 10-12 or 10:30-12:15)", value="", key="add_waiting"
+        )
 
         w_hours, w_norm = parse_waiting_time(waiting_time_raw)
         if waiting_time_raw.strip():
             if w_hours is None:
                 st.error("Waiting time format invalid. Use like 10-12 or 10:30-12:15.")
             else:
-                st.write(f"Waiting: **{w_norm}** | Hours: **{w_hours:.2f}** | Owed: **£{(w_hours*WAITING_RATE):.2f}**")
+                st.write(
+                    f"Waiting: **{w_norm}** | Hours: **{w_hours:.2f}** | Owed: **£{(w_hours*WAITING_RATE):.2f}**"
+                )
 
     comments = st.text_area("comments", key="add_comments")
 
@@ -1145,10 +1426,19 @@ with tab2:
         try:
             up_df = pd.read_csv(up) if up.name.lower().endswith(".csv") else pd.read_excel(up)
             st.dataframe(up_df.head(30), use_container_width=True)
-            if st.button("Import into database"):
-                n = insert_many(up_df)
-                st.success(f"Imported {n} rows (duplicates skipped if Date+Job already existed).")
-                st.rerun()
+
+            a, b = st.columns(2)
+            with a:
+                if st.button("Import (new rows only)"):
+                    n = insert_many(up_df)
+                    st.success(f"Imported {n} rows (duplicates skipped if Date+Job already existed).")
+                    st.rerun()
+            with b:
+                if st.button("Merge import (fill missing data)"):
+                    n = merge_many_fill_blanks(up_df)
+                    st.success(f"Merged {n} rows (filled blanks + inserted missing).")
+                    st.rerun()
+
         except Exception as e:
             st.error(f"Upload/import failed: {e}")
 
@@ -1167,10 +1457,7 @@ with tab3:
         d3.metric("Completed jobs", int(status_counts.get("Completed", 0)))
         d4.metric("Paid jobs", int(status_counts.get("Paid", 0)))
 
-        # DEDUPE for reporting first
         report_df = dedup_for_reporting(df)
-
-        # Money totals: exclude Withdraw + Aborted
         money_df = filter_money_rows(report_df)
 
         total_job = pd.to_numeric(money_df["amount"], errors="coerce").fillna(0).sum()
@@ -1185,14 +1472,10 @@ with tab3:
         k4.metric("Waiting owed (deduped, no Withdraw/Aborted)", f"£{total_wait:,.2f}")
         k5.metric("Total owed (fixed)", f"£{total_earned:,.2f}")
 
-        # =========================
-        # Inspect & Collect table (£8/job)
-        # =========================
         st.divider()
         st.markdown("### Inspect & Collect (£8 per job)")
-
         ic = report_df[report_df["category"].isin(INSPECT_COLLECT_TYPES)].copy()
-        ic = filter_money_rows(ic)  # consistent: no Withdraw/Aborted
+        ic = filter_money_rows(ic)
 
         ic_count = int(len(ic))
         ic_total = ic_count * INSPECT_COLLECT_RATE
@@ -1227,7 +1510,6 @@ with tab3:
             ic_view = pd.concat([ic_view, pd.DataFrame([total_row])], ignore_index=True)
             st.dataframe(ic_view, use_container_width=True, hide_index=True)
 
-        # Show Withdraw/Aborted rows
         st.divider()
         st.markdown("### Withdraw / Aborted jobs in this view")
         wa = df[df["job_status"].isin(["Withdraw", "Aborted"])].copy()
@@ -1283,7 +1565,8 @@ with tab3:
                     m2 = matches.copy()
                     m2["work_date_str"] = m2["work_date"].astype(str)
                     m2["pick_label"] = m2.apply(
-                        lambda r: f"{r.get('work_date_str')} | id {int(r.get('id'))} | {str(r.get('vehicle_reg') or '').strip()} | {str(r.get('auth_code') or '').strip()}",
+                        lambda r: f"{r.get('work_date_str')} | id {int(r.get('id'))} | "
+                                  f"{str(r.get('vehicle_reg') or '').strip()} | {str(r.get('auth_code') or '').strip()}",
                         axis=1,
                     )
                     labels = m2["pick_label"].tolist()
@@ -1331,9 +1614,15 @@ with tab3:
 
                     with c1:
                         new_date = st.date_input("Date", value=cur_date, key=f"e_date_{row_id}_{nonce}")
-                        new_job_number = st.text_input("job number (required)", value=cur_job_number, key=f"e_job_{row_id}_{nonce}")
-                        new_job_type = st.selectbox("job type", JOB_TYPE_OPTIONS, index=JOB_TYPE_OPTIONS.index(cur_job_type), key=f"e_type_{row_id}_{nonce}")
-                        new_status = st.selectbox("job status", STATUS_OPTIONS, index=STATUS_OPTIONS.index(cur_status), key=f"e_status_{row_id}_{nonce}")
+                        new_job_number = st.text_input(
+                            "job number (required)", value=cur_job_number, key=f"e_job_{row_id}_{nonce}"
+                        )
+                        new_job_type = st.selectbox(
+                            "job type", JOB_TYPE_OPTIONS, index=JOB_TYPE_OPTIONS.index(cur_job_type), key=f"e_type_{row_id}_{nonce}"
+                        )
+                        new_status = st.selectbox(
+                            "job status", STATUS_OPTIONS, index=STATUS_OPTIONS.index(cur_status), key=f"e_status_{row_id}_{nonce}"
+                        )
 
                     with c2:
                         new_vdesc = st.text_input("vehcile description", value=cur_vdesc, key=f"e_vdesc_{row_id}_{nonce}")
@@ -1344,9 +1633,15 @@ with tab3:
                         new_to = st.text_input("delivery to", value=cur_to, key=f"e_to_{row_id}_{nonce}")
 
                     with c4:
-                        new_job_amount = st.number_input("job amount", step=0.5, value=float(cur_job_amount), key=f"e_amt_{row_id}_{nonce}")
-                        new_job_expenses = st.selectbox("Job Expenses", JOB_EXPENSE_OPTIONS, index=JOB_EXPENSE_OPTIONS.index(cur_job_exp), key=f"e_expt_{row_id}_{nonce}")
-                        new_exp_amt = st.number_input("expenses Amount", step=0.5, value=float(cur_exp_amt), key=f"e_expa_{row_id}_{nonce}")
+                        new_job_amount = st.number_input(
+                            "job amount", step=0.5, value=float(cur_job_amount), key=f"e_amt_{row_id}_{nonce}"
+                        )
+                        new_job_expenses = st.selectbox(
+                            "Job Expenses", JOB_EXPENSE_OPTIONS, index=JOB_EXPENSE_OPTIONS.index(cur_job_exp), key=f"e_expt_{row_id}_{nonce}"
+                        )
+                        new_exp_amt = st.number_input(
+                            "expenses Amount", step=0.5, value=float(cur_exp_amt), key=f"e_expa_{row_id}_{nonce}"
+                        )
                         new_auth = st.text_input("Auth code", value=cur_auth, key=f"e_auth_{row_id}_{nonce}")
 
                         new_waiting_raw = st.text_input("waiting time", value=cur_waiting, key=f"e_wait_{row_id}_{nonce}")
