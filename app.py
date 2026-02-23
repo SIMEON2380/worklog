@@ -1,6 +1,7 @@
 import sqlite3
 import subprocess
 from datetime import date
+
 import pandas as pd
 import streamlit as st
 
@@ -179,19 +180,34 @@ with st.sidebar:
     st.caption(
         "Upload your Excel again and this will FILL missing vehicle fields for rows already in the DB (match by Date + Job)."
     )
+
     up_backfill = st.file_uploader("Backfill file", type=["xlsx", "xls", "csv"], key="backfill_file")
+
     if up_backfill is not None:
         try:
-            bf_df = (
-                pd.read_csv(up_backfill)
-                if up_backfill.name.lower().endswith(".csv")
-                else pd.read_excel(up_backfill)
-            )
+            # ✅ CHANGE: read ALL sheets in Excel (all tabs), then stack into one dataframe
+            if up_backfill.name.lower().endswith(".csv"):
+                bf_df = pd.read_csv(up_backfill)
+            else:
+                sheets = pd.read_excel(up_backfill, sheet_name=None)
+
+                frames = []
+                for sheet_name, sdf in sheets.items():
+                    if sdf is None or sdf.empty:
+                        continue
+                    sdf = sdf.copy()
+                    sdf["__sheet__"] = sheet_name  # helps you debug which tab a row came from
+                    frames.append(sdf)
+
+                bf_df = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+
             st.dataframe(bf_df.head(15), use_container_width=True)
+
             if st.button("Run backfill now"):
                 matched, updated = backfill_from_dataframe(bf_df)
                 st.success(f"Backfill done. Matched: {matched}, Updated: {updated}")
                 st.rerun()
+
         except Exception as e:
             st.error(f"Backfill failed: {e}")
 
@@ -213,9 +229,7 @@ df_all["job_id"] = df_all["job_id"].apply(clean_job_number)
 df_all["category"] = df_all["category"].fillna("").astype(str).apply(normalize_job_type)
 df_all["job_status"] = df_all["job_status"].apply(normalize_status)
 
-df_all["vehicle_description"] = (
-    df_all["vehicle_description"].fillna("").astype(str).str.strip().str.upper()
-)
+df_all["vehicle_description"] = df_all["vehicle_description"].fillna("").astype(str).str.strip().str.upper()
 df_all["vehicle_reg"] = df_all["vehicle_reg"].fillna("").astype(str).str.strip()
 df_all["collection_from"] = df_all["collection_from"].fillna("").astype(str).str.strip()
 df_all["delivery_to"] = df_all["delivery_to"].fillna("").astype(str).str.strip()
@@ -229,7 +243,10 @@ default_end = max(max_d, date.today())
 with st.sidebar:
     st.header("Filters")
     date_val = st.date_input(
-        "Work date range", value=(min_d, default_end), min_value=min_d, max_value=default_end
+        "Work date range",
+        value=(min_d, default_end),
+        min_value=min_d,
+        max_value=default_end,
     )
     start_d, end_d = (date_val if isinstance(date_val, (tuple, list)) else (date_val, date_val))
     status_filter = st.multiselect("Job status", options=STATUS_OPTIONS, default=STATUS_OPTIONS)
@@ -239,6 +256,7 @@ df = df_all.copy()
 df = df[df["work_date"].notna()]
 df = df[(df["work_date"] >= start_d) & (df["work_date"] <= end_d)]
 df = df[df["job_status"].isin(status_filter)]
+
 if search_txt:
     m = (
         df["job_id"].astype(str).str.contains(search_txt, case=False, na=False)
@@ -260,9 +278,7 @@ with tab1:
         work_date_val = st.date_input("Date", value=date.today())
         job_number = st.text_input("job number (required)")
         job_type = st.selectbox("job type", JOB_TYPE_OPTIONS, index=0)
-        job_status = st.selectbox(
-            "job status", STATUS_OPTIONS, index=STATUS_OPTIONS.index("Pending")
-        )
+        job_status = st.selectbox("job status", STATUS_OPTIONS, index=STATUS_OPTIONS.index("Pending"))
 
     with c2:
         vehicle_description = st.text_input("vehcile description")
@@ -277,18 +293,14 @@ with tab1:
         job_expenses = st.selectbox("Job Expenses", JOB_EXPENSE_OPTIONS, index=0)
         expenses_amount = st.number_input("expenses Amount", step=0.5, value=0.0)
         auth_code = st.text_input("Auth code")
-        waiting_time_raw = st.text_input(
-            "waiting time (e.g. 10-12 or 10:30-12:15)", value=""
-        )
+        waiting_time_raw = st.text_input("waiting time (e.g. 10-12 or 10:30-12:15)", value="")
 
         w_hours, w_norm = parse_waiting_time(waiting_time_raw)
         if waiting_time_raw.strip():
             if w_hours is None:
                 st.error("Waiting time format invalid.")
             else:
-                st.write(
-                    f"Waiting: **{w_norm}** | Hours: **{w_hours:.2f}** | Owed: **£{(w_hours*WAITING_RATE):.2f}**"
-                )
+                st.write(f"Waiting: **{w_norm}** | Hours: **{w_hours:.2f}** | Owed: **£{(w_hours*WAITING_RATE):.2f}**")
 
     comments = st.text_area("comments")
 
@@ -388,9 +400,6 @@ with tab2:
 
     st.dataframe(view_df[UI_COLUMNS], use_container_width=True, hide_index=True)
 
-    # =========================
-    # Weekly summary (FIXED)
-    # =========================
     st.divider()
     st.subheader("Weekly summary (deduped by Date+Job)")
 
@@ -412,5 +421,4 @@ with tab2:
         weekly[c] = pd.to_numeric(weekly[c], errors="coerce").fillna(0)
 
     weekly["total_owed"] = weekly["job_amount"] + weekly["waiting_owed"] + weekly["expenses_amount"]
-
     st.dataframe(weekly, use_container_width=True, hide_index=True)
