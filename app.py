@@ -3,7 +3,7 @@ import re
 import sqlite3
 import subprocess
 from datetime import date, timedelta
-from typing import Optional, Tuple, Any, List
+from typing import Optional, Tuple, Any
 
 import pandas as pd
 import streamlit as st
@@ -24,6 +24,10 @@ STATUS_OPTIONS = ["Start", "Completed", "Aborted", "Paid", "Pending", "Withdraw"
 JOB_TYPE_OPTIONS = ["STRD Trade Plate", "Inspect and Collect", "Inspect and Collect 2"]
 
 JOB_EXPENSE_OPTIONS = ["uber", "taxi", "train", "toll", "other"]
+
+# NEW: Inspect & Collect pay rate
+INSPECT_COLLECT_RATE = 8.00
+INSPECT_COLLECT_TYPES = {"Inspect and Collect", "Inspect and Collect 2"}
 
 # NOTE: kept your existing labels (including typos) to avoid breaking UI expectations
 UI_COLUMNS = [
@@ -942,7 +946,6 @@ with st.sidebar:
             st.error(f"Smart delete failed: {e}")
 
     if st.button("Refresh data"):
-        # read_all() always hits DB each run; rerun ensures latest
         st.rerun()
 
     st.divider()
@@ -1033,7 +1036,7 @@ with tab1:
                     work_date_val=work_date_val,
                     job_number=jn,
                     job_type=job_type,
-                    vehicle_description=vehicle_description,  # uppercased inside insert_row
+                    vehicle_description=vehicle_description,
                     vehicle_reg=vehicle_reg,
                     collection_from=collection_from,
                     delivery_to=delivery_to,
@@ -1104,6 +1107,52 @@ with tab3:
         k3.metric("Expenses (deduped, no Withdraw)", f"£{total_exp:,.2f}")
         k4.metric("Waiting owed (deduped, no Withdraw)", f"£{total_wait:,.2f}")
         k5.metric("Total owed (fixed)", f"£{total_earned:,.2f}")
+
+        # =========================
+        # NEW FEATURE: Inspect & Collect table (£8/job)
+        # =========================
+        st.divider()
+        st.markdown("### Inspect & Collect (£8 per job)")
+
+        ic = report_df[report_df["category"].isin(INSPECT_COLLECT_TYPES)].copy()
+
+        # If you don't want Withdraw to count as payable, uncomment this:
+        # ic = ic[ic["job_status"].astype(str).str.lower() != "withdraw"].copy()
+
+        ic_count = int(len(ic))
+        ic_total = ic_count * INSPECT_COLLECT_RATE
+
+        x1, x2 = st.columns(2)
+        x1.metric("Inspect & Collect jobs (deduped)", f"{ic_count:,}")
+        x2.metric("Total owed (£8/job)", f"£{ic_total:,.2f}")
+
+        if ic.empty:
+            st.caption("No Inspect & Collect jobs in the current filters.")
+        else:
+            ic_view = ic[["work_date", "job_id", "vehicle_reg", "category", "job_status"]].copy()
+            ic_view = ic_view.rename(
+                columns={
+                    "work_date": "Date",
+                    "job_id": "job number",
+                    "vehicle_reg": "vehicle Reg",
+                    "category": "job type",
+                    "job_status": "job status",
+                }
+            )
+            ic_view["Pay (£)"] = INSPECT_COLLECT_RATE
+
+            # Add total row at the bottom
+            total_row = {
+                "Date": "",
+                "job number": "",
+                "vehicle Reg": "",
+                "job type": "TOTAL",
+                "job status": f"{ic_count} job(s)",
+                "Pay (£)": ic_total,
+            }
+            ic_view = pd.concat([ic_view, pd.DataFrame([total_row])], ignore_index=True)
+
+            st.dataframe(ic_view, use_container_width=True, hide_index=True)
 
         # Optional view: list Withdraw/Aborted rows in this filtered range
         st.divider()
@@ -1264,7 +1313,7 @@ with tab3:
                             )
                             st.session_state.edit_selected_job = jn
                             st.session_state.edit_selected_row_id = row_id
-                            st.session_state.edit_nonce += 1  # force refresh
+                            st.session_state.edit_nonce += 1
                             st.success("Updated.")
                             st.rerun()
 
@@ -1299,7 +1348,6 @@ with tab3:
         st.divider()
         st.subheader("Weekly summary (deduped by Date+Job)")
 
-        # Weekly totals should also exclude Withdraw from money
         dfw = report_df.copy()
         dfw = dfw[dfw["job_status"].astype(str).str.lower() != "withdraw"].copy()
 
@@ -1319,7 +1367,6 @@ with tab3:
         for c in ["job_amount", "expenses_amount", "waiting_owed"]:
             weekly[c] = pd.to_numeric(weekly[c], errors="coerce").fillna(0)
 
-        # FIXED: weekly total owed should include expenses too
         weekly["total_owed"] = weekly["job_amount"] + weekly["waiting_owed"] + weekly["expenses_amount"]
         st.dataframe(weekly, use_container_width=True, hide_index=True)
 
