@@ -1,9 +1,16 @@
 import os
+import re
 import sqlite3
-from typing import Iterable, Optional, Dict, Any, Tuple
+from typing import Dict, Any, Tuple
+
 import pandas as pd
 
-from worklog.normalize import clean_job_number, normalize_status, normalize_job_type, normalize_expense_type
+from worklog.normalize import (
+    clean_job_number,
+    normalize_status,
+    normalize_job_type,
+    normalize_expense_type,
+)
 
 TABLE_NAME = "work_logs"
 
@@ -90,9 +97,15 @@ def ensure_schema():
                 conn.execute(f"ALTER TABLE {TABLE_NAME} ADD COLUMN {col} {col_type}")
         conn.commit()
 
-        conn.execute(f"CREATE INDEX IF NOT EXISTS idx_{TABLE_NAME}_work_date ON {TABLE_NAME}(work_date)")
-        conn.execute(f"CREATE INDEX IF NOT EXISTS idx_{TABLE_NAME}_job_id ON {TABLE_NAME}(job_id)")
-        conn.execute(f"CREATE INDEX IF NOT EXISTS idx_{TABLE_NAME}_status ON {TABLE_NAME}(job_status)")
+        conn.execute(
+            f"CREATE INDEX IF NOT EXISTS idx_{TABLE_NAME}_work_date ON {TABLE_NAME}(work_date)"
+        )
+        conn.execute(
+            f"CREATE INDEX IF NOT EXISTS idx_{TABLE_NAME}_job_id ON {TABLE_NAME}(job_id)"
+        )
+        conn.execute(
+            f"CREATE INDEX IF NOT EXISTS idx_{TABLE_NAME}_status ON {TABLE_NAME}(job_status)"
+        )
         conn.commit()
 
         # unique protection for future duplicates
@@ -107,7 +120,9 @@ def ensure_schema():
 
 def read_all() -> pd.DataFrame:
     with get_conn() as conn:
-        return pd.read_sql_query(f"SELECT * FROM {TABLE_NAME} ORDER BY work_date DESC, id DESC", conn)
+        return pd.read_sql_query(
+            f"SELECT * FROM {TABLE_NAME} ORDER BY work_date DESC, id DESC", conn
+        )
 
 
 def update_status_for_year(year: int, new_status: str = "Paid") -> int:
@@ -132,11 +147,24 @@ def update_status_for_year(year: int, new_status: str = "Paid") -> int:
 def backfill_from_dataframe(df: pd.DataFrame) -> Tuple[int, int]:
     """
     Backfill missing fields by matching (work_date, job_id).
-    Updates ONLY when DB value is empty/NULL.
+
+    Default behavior:
+      - Updates ONLY when DB value is empty/NULL.
+
+    Upgrade behavior (NEW):
+      - For collection_from / delivery_to, if DB has NO postcode but the incoming value DOES,
+        we update (upgrade) the DB field to include the postcode.
+
     Returns (matched_rows, updated_rows).
     """
     if df is None or df.empty:
         return 0, 0
+
+    # common-enough UK postcode pattern (practical, not perfect)
+    UK_POSTCODE_RE = re.compile(r"\b[A-Z]{1,2}\d{1,2}[A-Z]?\s*\d[A-Z]{2}\b", re.I)
+
+    def has_postcode(s: str) -> bool:
+        return bool(UK_POSTCODE_RE.search(str(s or "").upper()))
 
     cols_lower = {str(c).lower().strip(): c for c in df.columns}
 
@@ -154,8 +182,8 @@ def backfill_from_dataframe(df: pd.DataFrame) -> Tuple[int, int]:
 
     c_vdesc = pick("vehcile description", "vehicle description", "vehicle_description")
     c_vreg = pick("vehicle reg", "vehicle_reg", "vehicle Reg")
-    c_from = pick("collection from", "collection_from")
-    c_to = pick("delivery to", "delivery_to")
+    c_from = pick("collection from", "collection_from", "from", "from_loc", "pickup", "pickup_from")
+    c_to = pick("delivery to", "delivery_to", "to", "to_loc", "dropoff", "dropoff_to")
     c_auth = pick("auth code", "auth_code", "Auth code")
     c_status = pick("job status", "job_status", "status")
     c_comments = pick("comments", "comment", "notes", "note")
@@ -239,16 +267,27 @@ def backfill_from_dataframe(df: pd.DataFrame) -> Tuple[int, int]:
 
             sets: Dict[str, Any] = {}
 
+            # vehicle fields: only fill if empty
             if is_empty(row[1]) and str(r["vehicle_description"]).strip():
                 sets["vehicle_description"] = str(r["vehicle_description"]).strip().upper()
+
             if is_empty(row[2]) and str(r["vehicle_reg"]).strip():
                 sets["vehicle_reg"] = str(r["vehicle_reg"]).strip()
-            if is_empty(row[3]) and str(r["collection_from"]).strip():
-                sets["collection_from"] = str(r["collection_from"]).strip()
-            if is_empty(row[4]) and str(r["delivery_to"]).strip():
-                sets["delivery_to"] = str(r["delivery_to"]).strip()
+
+            # ✅ locations: fill if empty OR upgrade if postcode missing in DB but present in new value
+            old_from = str(row[3] or "").strip()
+            new_from = str(r["collection_from"] or "").strip()
+            if new_from and (is_empty(old_from) or (not has_postcode(old_from) and has_postcode(new_from))):
+                sets["collection_from"] = new_from
+
+            old_to = str(row[4] or "").strip()
+            new_to = str(r["delivery_to"] or "").strip()
+            if new_to and (is_empty(old_to) or (not has_postcode(old_to) and has_postcode(new_to))):
+                sets["delivery_to"] = new_to
+
             if is_empty(row[5]) and str(r["auth_code"]).strip():
                 sets["auth_code"] = str(r["auth_code"]).strip()
+
             if is_empty(row[9]) and str(r["comments"]).strip():
                 sets["comments"] = str(r["comments"]).strip()
 
