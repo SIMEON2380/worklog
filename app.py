@@ -4,11 +4,23 @@ from datetime import date
 import pandas as pd
 import streamlit as st
 
-from worklog.db import ensure_schema, read_all, get_db_path, backfill_from_dataframe, update_status_for_year
+from worklog.db import (
+    ensure_schema,
+    read_all,
+    get_db_path,
+    backfill_from_dataframe,
+    update_status_for_year,
+)
 from worklog.normalize import (
-    STATUS_OPTIONS, JOB_TYPE_OPTIONS, JOB_EXPENSE_OPTIONS,
-    NON_PAYABLE_STATUSES, normalize_status, normalize_job_type, normalize_expense_type,
-    clean_job_number, zero_to_none
+    STATUS_OPTIONS,
+    JOB_TYPE_OPTIONS,
+    JOB_EXPENSE_OPTIONS,
+    NON_PAYABLE_STATUSES,
+    normalize_status,
+    normalize_job_type,
+    normalize_expense_type,
+    clean_job_number,
+    zero_to_none,
 )
 from worklog.dates import to_clean_date_series, safe_date_bounds, week_start
 from worklog.waiting import parse_waiting_time, WAITING_RATE
@@ -52,8 +64,6 @@ def filter_money_rows(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def get_conn():
-    import sqlite3
-    from worklog.db import get_db_path
     conn = sqlite3.connect(get_db_path(), check_same_thread=False)
     conn.execute("PRAGMA journal_mode=WAL;")
     conn.execute("PRAGMA synchronous=NORMAL;")
@@ -113,11 +123,24 @@ def insert_row(
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
-                wd, job_number, jt,
-                vdesc, vreg, cfrom, cto,
-                job_amount_db, je, expenses_amount_db, auth, status,
-                w_norm or "", w_hours, w_amount,
-                "", None, cmts
+                wd,
+                job_number,
+                jt,
+                vdesc,
+                vreg,
+                cfrom,
+                cto,
+                job_amount_db,
+                je,
+                expenses_amount_db,
+                auth,
+                status,
+                w_norm or "",
+                w_hours,
+                w_amount,
+                "",
+                None,
+                cmts,
             ),
         )
         conn.commit()
@@ -153,11 +176,17 @@ with st.sidebar:
 
     st.divider()
     st.subheader("Backfill missing fields (NO duplicates)")
-    st.caption("Upload your Excel again and this will FILL missing vehicle fields for rows already in the DB (match by Date + Job).")
+    st.caption(
+        "Upload your Excel again and this will FILL missing vehicle fields for rows already in the DB (match by Date + Job)."
+    )
     up_backfill = st.file_uploader("Backfill file", type=["xlsx", "xls", "csv"], key="backfill_file")
     if up_backfill is not None:
         try:
-            bf_df = pd.read_csv(up_backfill) if up_backfill.name.lower().endswith(".csv") else pd.read_excel(up_backfill)
+            bf_df = (
+                pd.read_csv(up_backfill)
+                if up_backfill.name.lower().endswith(".csv")
+                else pd.read_excel(up_backfill)
+            )
             st.dataframe(bf_df.head(15), use_container_width=True)
             if st.button("Run backfill now"):
                 matched, updated = backfill_from_dataframe(bf_df)
@@ -184,7 +213,9 @@ df_all["job_id"] = df_all["job_id"].apply(clean_job_number)
 df_all["category"] = df_all["category"].fillna("").astype(str).apply(normalize_job_type)
 df_all["job_status"] = df_all["job_status"].apply(normalize_status)
 
-df_all["vehicle_description"] = df_all["vehicle_description"].fillna("").astype(str).str.strip().str.upper()
+df_all["vehicle_description"] = (
+    df_all["vehicle_description"].fillna("").astype(str).str.strip().str.upper()
+)
 df_all["vehicle_reg"] = df_all["vehicle_reg"].fillna("").astype(str).str.strip()
 df_all["collection_from"] = df_all["collection_from"].fillna("").astype(str).str.strip()
 df_all["delivery_to"] = df_all["delivery_to"].fillna("").astype(str).str.strip()
@@ -197,7 +228,9 @@ default_end = max(max_d, date.today())
 
 with st.sidebar:
     st.header("Filters")
-    date_val = st.date_input("Work date range", value=(min_d, default_end), min_value=min_d, max_value=default_end)
+    date_val = st.date_input(
+        "Work date range", value=(min_d, default_end), min_value=min_d, max_value=default_end
+    )
     start_d, end_d = (date_val if isinstance(date_val, (tuple, list)) else (date_val, date_val))
     status_filter = st.multiselect("Job status", options=STATUS_OPTIONS, default=STATUS_OPTIONS)
     search_txt = st.text_input("Search (job / reg / auth / locations / comments)", value="").strip()
@@ -227,7 +260,9 @@ with tab1:
         work_date_val = st.date_input("Date", value=date.today())
         job_number = st.text_input("job number (required)")
         job_type = st.selectbox("job type", JOB_TYPE_OPTIONS, index=0)
-        job_status = st.selectbox("job status", STATUS_OPTIONS, index=STATUS_OPTIONS.index("Pending"))
+        job_status = st.selectbox(
+            "job status", STATUS_OPTIONS, index=STATUS_OPTIONS.index("Pending")
+        )
 
     with c2:
         vehicle_description = st.text_input("vehcile description")
@@ -242,14 +277,18 @@ with tab1:
         job_expenses = st.selectbox("Job Expenses", JOB_EXPENSE_OPTIONS, index=0)
         expenses_amount = st.number_input("expenses Amount", step=0.5, value=0.0)
         auth_code = st.text_input("Auth code")
-        waiting_time_raw = st.text_input("waiting time (e.g. 10-12 or 10:30-12:15)", value="")
+        waiting_time_raw = st.text_input(
+            "waiting time (e.g. 10-12 or 10:30-12:15)", value=""
+        )
 
         w_hours, w_norm = parse_waiting_time(waiting_time_raw)
         if waiting_time_raw.strip():
             if w_hours is None:
                 st.error("Waiting time format invalid.")
             else:
-                st.write(f"Waiting: **{w_norm}** | Hours: **{w_hours:.2f}** | Owed: **£{(w_hours*WAITING_RATE):.2f}**")
+                st.write(
+                    f"Waiting: **{w_norm}** | Hours: **{w_hours:.2f}** | Owed: **£{(w_hours*WAITING_RATE):.2f}**"
+                )
 
     comments = st.text_area("comments")
 
@@ -325,38 +364,53 @@ with tab2:
 
     st.divider()
     st.markdown("### Records (strict column order)")
-    view_df = report_df.copy().rename(columns={
-        "work_date": "Date",
-        "job_id": "job number",
-        "category": "job type",
-        "vehicle_description": "vehcile description",
-        "vehicle_reg": "vehicle Reg",
-        "collection_from": "collection from",
-        "delivery_to": "delivery to",
-        "amount": "job amount",
-        "job_expenses": "Job Expenses",
-        "expenses_amount": "expenses Amount",
-        "auth_code": "Auth code",
-        "job_status": "job status",
-        "waiting_time": "waiting time",
-        "comments": "comments",
-    })
+    view_df = report_df.copy().rename(
+        columns={
+            "work_date": "Date",
+            "job_id": "job number",
+            "category": "job type",
+            "vehicle_description": "vehcile description",
+            "vehicle_reg": "vehicle Reg",
+            "collection_from": "collection from",
+            "delivery_to": "delivery to",
+            "amount": "job amount",
+            "job_expenses": "Job Expenses",
+            "expenses_amount": "expenses Amount",
+            "auth_code": "Auth code",
+            "job_status": "job status",
+            "waiting_time": "waiting time",
+            "comments": "comments",
+        }
+    )
     for col in UI_COLUMNS:
         if col not in view_df.columns:
             view_df[col] = ""
 
     st.dataframe(view_df[UI_COLUMNS], use_container_width=True, hide_index=True)
 
+    # =========================
+    # Weekly summary (FIXED)
+    # =========================
     st.divider()
-    st.markdown("### Weekly summary (deduped)")
+    st.subheader("Weekly summary (deduped by Date+Job)")
+
     dfw = filter_money_rows(report_df).copy()
     dfw["week_start"] = dfw["work_date"].apply(week_start)
+
     weekly = (
         dfw.groupby("week_start", as_index=False)
         .agg(
-            rows=("job number", "count"),
-            job_amount=("job amount", "sum"),
-            expenses_amount=("expenses Amount", "sum"),
-            waiting_owed=("waiting owed", "sum"),
+            rows=("id", "count"),  # if "id" ever doesn't exist, change to ("job_id", "count")
+            job_amount=("amount", "sum"),
+            expenses_amount=("expenses_amount", "sum"),
+            waiting_owed=("waiting_amount", "sum"),
         )
+        .sort_values("week_start", ascending=False)
     )
+
+    for c in ["job_amount", "expenses_amount", "waiting_owed"]:
+        weekly[c] = pd.to_numeric(weekly[c], errors="coerce").fillna(0)
+
+    weekly["total_owed"] = weekly["job_amount"] + weekly["waiting_owed"] + weekly["expenses_amount"]
+
+    st.dataframe(weekly, use_container_width=True, hide_index=True)
