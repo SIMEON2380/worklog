@@ -148,7 +148,14 @@ def insert_row(
 
 
 def update_row_by_id(row_id: int, **fields):
+    """
+    Generic updater by DB primary key (id).
+    NOTE: fields must use DB column names (vehicle_description, job_status, etc).
+    """
     from worklog.db import TABLE_NAME
+
+    if not fields:
+        return
 
     with get_conn() as conn:
         cols = []
@@ -185,7 +192,6 @@ with st.sidebar:
 
     if up_backfill is not None:
         try:
-            # ✅ CHANGE: read ALL sheets in Excel (all tabs), then stack into one dataframe
             if up_backfill.name.lower().endswith(".csv"):
                 bf_df = pd.read_csv(up_backfill)
             else:
@@ -196,7 +202,7 @@ with st.sidebar:
                     if sdf is None or sdf.empty:
                         continue
                     sdf = sdf.copy()
-                    sdf["__sheet__"] = sheet_name  # helps you debug which tab a row came from
+                    sdf["__sheet__"] = sheet_name
                     frames.append(sdf)
 
                 bf_df = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
@@ -300,7 +306,9 @@ with tab1:
             if w_hours is None:
                 st.error("Waiting time format invalid.")
             else:
-                st.write(f"Waiting: **{w_norm}** | Hours: **{w_hours:.2f}** | Owed: **£{(w_hours*WAITING_RATE):.2f}**")
+                st.write(
+                    f"Waiting: **{w_norm}** | Hours: **{w_hours:.2f}** | Owed: **£{(w_hours*WAITING_RATE):.2f}**"
+                )
 
     comments = st.text_area("comments")
 
@@ -376,6 +384,8 @@ with tab2:
 
     st.divider()
     st.markdown("### Records (strict column order)")
+
+    # Build view_df with UI headers
     view_df = report_df.copy().rename(
         columns={
             "work_date": "Date",
@@ -398,7 +408,133 @@ with tab2:
         if col not in view_df.columns:
             view_df[col] = ""
 
-    st.dataframe(view_df[UI_COLUMNS], use_container_width=True, hide_index=True)
+    if "id" not in view_df.columns:
+        st.error("Cannot edit: 'id' column missing from data.")
+    else:
+        # ---------- FORM EDIT ----------
+        with st.expander("Edit a single row (Form)"):
+            ids = view_df["id"].astype(int).tolist()
+            selected_id = st.selectbox("Select row id", options=ids, index=0)
+
+            row = view_df[view_df["id"] == selected_id].iloc[0]
+
+            f1, f2, f3, f4 = st.columns(4)
+            with f1:
+                f_job_status = st.selectbox("job status", STATUS_OPTIONS, index=STATUS_OPTIONS.index(row["job status"]))
+                f_job_type = st.selectbox("job type", JOB_TYPE_OPTIONS, index=JOB_TYPE_OPTIONS.index(row["job type"]))
+            with f2:
+                f_vdesc = st.text_input("vehcile description", value=str(row["vehcile description"] or ""))
+                f_vreg = st.text_input("vehicle Reg", value=str(row["vehicle Reg"] or ""))
+            with f3:
+                f_cfrom = st.text_input("collection from", value=str(row["collection from"] or ""))
+                f_cto = st.text_input("delivery to", value=str(row["delivery to"] or ""))
+            with f4:
+                f_job_amt = st.number_input("job amount", step=0.5, value=float(row["job amount"] or 0.0))
+                f_job_exp = st.selectbox(
+                    "Job Expenses", JOB_EXPENSE_OPTIONS, index=JOB_EXPENSE_OPTIONS.index(row["Job Expenses"])
+                )
+                f_exp_amt = st.number_input("expenses Amount", step=0.5, value=float(row["expenses Amount"] or 0.0))
+                f_auth = st.text_input("Auth code", value=str(row["Auth code"] or ""))
+
+            f_wait = st.text_input("waiting time", value=str(row["waiting time"] or ""))
+            f_comments = st.text_area("comments", value=str(row["comments"] or ""))
+
+            if st.button("Save row"):
+                updates = {
+                    "job_status": normalize_status(f_job_status),
+                    "category": normalize_job_type(f_job_type),
+                    "vehicle_description": str(f_vdesc or "").strip().upper(),
+                    "vehicle_reg": str(f_vreg or "").strip(),
+                    "collection_from": str(f_cfrom or "").strip(),
+                    "delivery_to": str(f_cto or "").strip(),
+                    "amount": zero_to_none(f_job_amt),
+                    "job_expenses": normalize_expense_type(f_job_exp),
+                    "expenses_amount": zero_to_none(f_exp_amt),
+                    "auth_code": str(f_auth or "").strip(),
+                    "waiting_time": str(f_wait or "").strip(),
+                    "comments": str(f_comments or "").strip(),
+                }
+                update_row_by_id(int(selected_id), **updates)
+                st.success("Row updated.")
+                st.rerun()
+
+        # ---------- INLINE EDIT ----------
+        st.caption("Inline edits: change values in the table, then click **Save edited rows**.")
+        editor_base = view_df.set_index("id")
+
+        edited = st.data_editor(
+            editor_base[UI_COLUMNS],
+            use_container_width=True,
+            hide_index=True,
+            num_rows="fixed",
+            key="records_editor",
+        )
+
+        if st.button("Save edited rows"):
+            before = editor_base[UI_COLUMNS]
+            after = edited
+
+            ui_to_db = {
+                "vehcile description": "vehicle_description",
+                "vehicle Reg": "vehicle_reg",
+                "collection from": "collection_from",
+                "delivery to": "delivery_to",
+                "job status": "job_status",
+                "job type": "category",
+                "Job Expenses": "job_expenses",
+                "Auth code": "auth_code",
+                "job amount": "amount",
+                "expenses Amount": "expenses_amount",
+                "waiting time": "waiting_time",
+                "comments": "comments",
+                "Date": "work_date",
+                "job number": "job_id",
+            }
+
+            changed_ids = []
+            for row_id in before.index:
+                if row_id not in after.index:
+                    continue
+                if not before.loc[row_id].equals(after.loc[row_id]):
+                    changed_ids.append(row_id)
+
+            if not changed_ids:
+                st.info("No changes to save.")
+            else:
+                saved = 0
+                for row_id in changed_ids:
+                    updates = {}
+                    for ui_col in UI_COLUMNS:
+                        db_col = ui_to_db.get(ui_col)
+                        if not db_col:
+                            continue
+                        new_val = after.loc[row_id, ui_col]
+                        old_val = before.loc[row_id, ui_col]
+
+                        if pd.isna(new_val) and pd.isna(old_val):
+                            continue
+
+                        if new_val != old_val:
+                            # minimal normalization on key fields
+                            if db_col == "job_status":
+                                updates[db_col] = normalize_status(str(new_val))
+                            elif db_col == "category":
+                                updates[db_col] = normalize_job_type(str(new_val))
+                            elif db_col == "job_expenses":
+                                updates[db_col] = normalize_expense_type(str(new_val))
+                            elif db_col == "vehicle_description":
+                                updates[db_col] = str(new_val or "").strip().upper()
+                            elif db_col in {"vehicle_reg", "collection_from", "delivery_to", "auth_code", "comments"}:
+                                updates[db_col] = str(new_val or "").strip()
+                            else:
+                                updates[db_col] = new_val
+
+                    if updates:
+                        update_row_by_id(int(row_id), **updates)
+                        saved += 1
+
+                st.success(f"Saved edits for {saved} row(s).")
+                st.rerun()
 
     st.divider()
     st.subheader("Weekly summary (deduped by Date+Job)")
@@ -409,7 +545,7 @@ with tab2:
     weekly = (
         dfw.groupby("week_start", as_index=False)
         .agg(
-            rows=("id", "count"),  # if "id" ever doesn't exist, change to ("job_id", "count")
+            rows=("id", "count"),
             job_amount=("amount", "sum"),
             expenses_amount=("expenses_amount", "sum"),
             waiting_owed=("waiting_amount", "sum"),
