@@ -25,7 +25,7 @@ JOB_TYPE_OPTIONS = ["STRD Trade Plate", "Inspect and Collect", "Inspect and Coll
 
 JOB_EXPENSE_OPTIONS = ["uber", "taxi", "train", "toll", "other"]
 
-# NEW: Inspect & Collect pay rate
+# Inspect & Collect pay rate
 INSPECT_COLLECT_RATE = 8.00
 INSPECT_COLLECT_TYPES = {"Inspect and Collect", "Inspect and Collect 2"}
 
@@ -44,7 +44,7 @@ UI_COLUMNS = [
     "Auth code",
     "job status",
     "waiting time",
-    "comments",  # NEW
+    "comments",
 ]
 
 EXPECTED_DB_COLS = [
@@ -66,7 +66,7 @@ EXPECTED_DB_COLS = [
     "job_expenses",
     "expenses_amount",
     "auth_code",
-    "comments",      # NEW
+    "comments",
     "created_at",
 ]
 
@@ -150,7 +150,7 @@ def ensure_schema():
                 expenses_amount REAL,
                 auth_code TEXT,
 
-                comments TEXT,  -- NEW
+                comments TEXT,
 
                 created_at TEXT DEFAULT (datetime('now'))
             )
@@ -177,7 +177,7 @@ def ensure_schema():
             ("job_expenses", "TEXT"),
             ("expenses_amount", "REAL"),
             ("auth_code", "TEXT"),
-            ("comments", "TEXT"),  # NEW
+            ("comments", "TEXT"),
             ("created_at", "TEXT"),
         ]
         for col, col_type in migrations:
@@ -1099,7 +1099,7 @@ with tab3:
         total_exp = pd.to_numeric(money_df["expenses_amount"], errors="coerce").fillna(0).sum()
         total_wait = pd.to_numeric(money_df["waiting_amount"], errors="coerce").fillna(0).sum()
 
-        total_earned = total_job + total_exp + total_wait  # Correct "total owed/earned" logic
+        total_earned = total_job + total_exp + total_wait
 
         k1, k2, k3, k4, k5 = st.columns(5)
         k1.metric("Rows (filtered)", f"{len(df):,}")
@@ -1109,15 +1109,12 @@ with tab3:
         k5.metric("Total owed (fixed)", f"£{total_earned:,.2f}")
 
         # =========================
-        # NEW FEATURE: Inspect & Collect table (£8/job)
+        # Inspect & Collect table (£8/job)
         # =========================
         st.divider()
         st.markdown("### Inspect & Collect (£8 per job)")
 
         ic = report_df[report_df["category"].isin(INSPECT_COLLECT_TYPES)].copy()
-
-        # If you don't want Withdraw to count as payable, uncomment this:
-        # ic = ic[ic["job_status"].astype(str).str.lower() != "withdraw"].copy()
 
         ic_count = int(len(ic))
         ic_total = ic_count * INSPECT_COLLECT_RATE
@@ -1141,7 +1138,6 @@ with tab3:
             )
             ic_view["Pay (£)"] = INSPECT_COLLECT_RATE
 
-            # Add total row at the bottom
             total_row = {
                 "Date": "",
                 "job number": "",
@@ -1348,18 +1344,63 @@ with tab3:
         st.divider()
         st.subheader("Weekly summary (deduped by Date+Job)")
 
-        dfw = report_df.copy()
-        dfw = dfw[dfw["job_status"].astype(str).str.lower() != "withdraw"].copy()
+        # ---- FIX: make weekly summary robust to either DB column names OR UI column names ----
+        def pick_existing_col(dff: pd.DataFrame, *candidates: str) -> Optional[str]:
+            for c in candidates:
+                if c in dff.columns:
+                    return c
+            return None
 
-        dfw["week_start"] = dfw["work_date"].apply(week_start)
+        dfw = report_df.copy()
+
+        # Exclude Withdraw rows consistently (works for both naming styles)
+        status_col = pick_existing_col(dfw, "job_status", "job status")
+        if status_col is not None:
+            dfw = dfw[dfw[status_col].astype(str).str.lower() != "withdraw"].copy()
+
+        # Date / week start
+        date_col = pick_existing_col(dfw, "work_date", "Date")
+        if date_col is None:
+            st.error("Weekly summary error: no date column found (expected 'work_date' or 'Date').")
+            st.stop()
+
+        # Ensure it's actual date objects
+        if date_col == "Date":
+            dfw["_work_date_for_week"] = to_clean_date_series(dfw["Date"])
+        else:
+            dfw["_work_date_for_week"] = dfw["work_date"]
+
+        dfw["_work_date_for_week"] = to_clean_date_series(dfw["_work_date_for_week"])
+        dfw = dfw[dfw["_work_date_for_week"].notna()].copy()
+        dfw["week_start"] = dfw["_work_date_for_week"].apply(week_start)
+
+        # Money columns: accept either DB or UI naming
+        amount_col = pick_existing_col(dfw, "amount", "job amount", "job_amount")
+        exp_col = pick_existing_col(dfw, "expenses_amount", "expenses Amount", "expenses amount")
+        wait_col = pick_existing_col(dfw, "waiting_amount", "waiting owed", "waiting_owed", "waiting amount")
+
+        # If any are missing, create them as zeros so groupby never crashes
+        if amount_col is None:
+            dfw["_job_amount_for_week"] = 0.0
+            amount_col = "_job_amount_for_week"
+        if exp_col is None:
+            dfw["_expenses_amount_for_week"] = 0.0
+            exp_col = "_expenses_amount_for_week"
+        if wait_col is None:
+            dfw["_waiting_owed_for_week"] = 0.0
+            wait_col = "_waiting_owed_for_week"
+
+        dfw[amount_col] = pd.to_numeric(dfw[amount_col], errors="coerce").fillna(0)
+        dfw[exp_col] = pd.to_numeric(dfw[exp_col], errors="coerce").fillna(0)
+        dfw[wait_col] = pd.to_numeric(dfw[wait_col], errors="coerce").fillna(0)
 
         weekly = (
             dfw.groupby("week_start", as_index=False)
             .agg(
-                rows=("id", "count"),
-                job_amount=("amount", "sum"),
-                expenses_amount=("expenses_amount", "sum"),
-                waiting_owed=("waiting_amount", "sum"),
+                rows=("id", "count") if "id" in dfw.columns else (amount_col, "count"),
+                job_amount=(amount_col, "sum"),
+                expenses_amount=(exp_col, "sum"),
+                waiting_owed=(wait_col, "sum"),
             )
             .sort_values("week_start", ascending=False)
         )
