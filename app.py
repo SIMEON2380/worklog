@@ -632,7 +632,6 @@ def insert_many(df: pd.DataFrame) -> int:
     df2["job_status"] = df2["job_status"].apply(normalize_status)
 
     df2["waiting_raw"] = df2[c_waiting].fillna("").astype(str) if c_waiting else ""
-
     df2["comments"] = df2[c_comments].fillna("").astype(str).str.strip() if c_comments else ""
 
     wh_list, wn_list, wa_list = [], [], []
@@ -1344,8 +1343,9 @@ with tab3:
         st.divider()
         st.subheader("Weekly summary (deduped by Date+Job)")
 
-        # ---- FIX: make weekly summary robust to either DB column names OR UI column names ----
+        # ---- FIX: weekly summary should never KeyError if columns differ ----
         def pick_existing_col(dff: pd.DataFrame, *candidates: str) -> Optional[str]:
+            """Return the first candidate that exists in dff.columns, else None."""
             for c in candidates:
                 if c in dff.columns:
                     return c
@@ -1353,33 +1353,36 @@ with tab3:
 
         dfw = report_df.copy()
 
-        # Exclude Withdraw rows consistently (works for both naming styles)
+        # Exclude Withdraw rows consistently
         status_col = pick_existing_col(dfw, "job_status", "job status")
         if status_col is not None:
-            dfw = dfw[dfw[status_col].astype(str).str.lower() != "withdraw"].copy()
+            dfw = dfw[dfw[status_col].astype(str).str.lower().str.strip() != "withdraw"].copy()
 
-        # Date / week start
+        # Date column
         date_col = pick_existing_col(dfw, "work_date", "Date")
         if date_col is None:
             st.error("Weekly summary error: no date column found (expected 'work_date' or 'Date').")
             st.stop()
 
-        # Ensure it's actual date objects
-        if date_col == "Date":
-            dfw["_work_date_for_week"] = to_clean_date_series(dfw["Date"])
-        else:
-            dfw["_work_date_for_week"] = dfw["work_date"]
-
-        dfw["_work_date_for_week"] = to_clean_date_series(dfw["_work_date_for_week"])
+        # Normalize dates -> week_start
+        dfw["_work_date_for_week"] = to_clean_date_series(dfw[date_col])
         dfw = dfw[dfw["_work_date_for_week"].notna()].copy()
         dfw["week_start"] = dfw["_work_date_for_week"].apply(week_start)
 
-        # Money columns: accept either DB or UI naming
-        amount_col = pick_existing_col(dfw, "amount", "job amount", "job_amount")
-        exp_col = pick_existing_col(dfw, "expenses_amount", "expenses Amount", "expenses amount")
-        wait_col = pick_existing_col(dfw, "waiting_amount", "waiting owed", "waiting_owed", "waiting amount")
+        # Money columns (accept DB names + UI names + a few common variants)
+        amount_col = pick_existing_col(dfw, "amount", "job amount", "job_amount", "Job amount", "Job Amount")
+        exp_col = pick_existing_col(dfw, "expenses_amount", "expenses Amount", "expenses amount", "Expenses Amount")
+        wait_col = pick_existing_col(
+            dfw,
+            "waiting_amount",
+            "waiting owed",
+            "waiting_owed",
+            "waiting amount",
+            "waiting_owed_for_week",
+            "waiting owed for week",
+        )
 
-        # If any are missing, create them as zeros so groupby never crashes
+        # Create missing columns as zeros so groupby never crashes
         if amount_col is None:
             dfw["_job_amount_for_week"] = 0.0
             amount_col = "_job_amount_for_week"
@@ -1390,23 +1393,32 @@ with tab3:
             dfw["_waiting_owed_for_week"] = 0.0
             wait_col = "_waiting_owed_for_week"
 
+        # Coerce numeric safely
         dfw[amount_col] = pd.to_numeric(dfw[amount_col], errors="coerce").fillna(0)
         dfw[exp_col] = pd.to_numeric(dfw[exp_col], errors="coerce").fillna(0)
         dfw[wait_col] = pd.to_numeric(dfw[wait_col], errors="coerce").fillna(0)
 
+        # Row count: prefer unique jobs per week
+        job_id_col = pick_existing_col(dfw, "job_id", "job number", "job_number", "job id")
+        if job_id_col is not None:
+            dfw["_job_key_for_week"] = dfw[job_id_col].astype(str).str.strip()
+            rows_agg = ("_job_key_for_week", "nunique")
+        elif "id" in dfw.columns:
+            rows_agg = ("id", "count")
+        else:
+            dfw["_row_counter"] = 1
+            rows_agg = ("_row_counter", "sum")
+
         weekly = (
             dfw.groupby("week_start", as_index=False)
             .agg(
-                rows=("id", "count") if "id" in dfw.columns else (amount_col, "count"),
+                rows=rows_agg,
                 job_amount=(amount_col, "sum"),
                 expenses_amount=(exp_col, "sum"),
                 waiting_owed=(wait_col, "sum"),
             )
             .sort_values("week_start", ascending=False)
         )
-
-        for c in ["job_amount", "expenses_amount", "waiting_owed"]:
-            weekly[c] = pd.to_numeric(weekly[c], errors="coerce").fillna(0)
 
         weekly["total_owed"] = weekly["job_amount"] + weekly["waiting_owed"] + weekly["expenses_amount"]
         st.dataframe(weekly, use_container_width=True, hide_index=True)
