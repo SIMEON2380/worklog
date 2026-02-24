@@ -150,7 +150,7 @@ def insert_row(
 def update_row_by_id(row_id: int, **fields):
     """
     Generic updater by DB primary key (id).
-    NOTE: fields must use DB column names (vehicle_description, job_status, etc).
+    fields must use DB column names (vehicle_description, job_status, etc).
     """
     from worklog.db import TABLE_NAME
 
@@ -255,8 +255,8 @@ with st.sidebar:
         max_value=default_end,
     )
     start_d, end_d = (date_val if isinstance(date_val, (tuple, list)) else (date_val, date_val))
-    status_filter = st.multiselect("Job status", options=STATUS_OPTIONS, default=STATUS_OPTIONS)
-    search_txt = st.text_input("Search (job / reg / auth / locations / comments)", value="").strip()
+    status_filter = st.multiselect("Job status", options=STATUS_OPTIONS, default=STATUS_OPTIONS, key="flt_status")
+    search_txt = st.text_input("Search (job / reg / auth / locations / comments)", value="", key="flt_search").strip()
 
 df = df_all.copy()
 df = df[df["work_date"].notna()]
@@ -281,38 +281,40 @@ with tab1:
     c1, c2, c3, c4 = st.columns(4)
 
     with c1:
-        work_date_val = st.date_input("Date", value=date.today())
-        job_number = st.text_input("job number (required)")
-        job_type = st.selectbox("job type", JOB_TYPE_OPTIONS, index=0)
-        job_status = st.selectbox("job status", STATUS_OPTIONS, index=STATUS_OPTIONS.index("Pending"))
+        work_date_val = st.date_input("Date", value=date.today(), key="add_date")
+        job_number = st.text_input("job number (required)", key="add_job")
+        job_type = st.selectbox("job type", JOB_TYPE_OPTIONS, index=0, key="add_type")
+        job_status = st.selectbox(
+            "job status", STATUS_OPTIONS, index=STATUS_OPTIONS.index("Pending"), key="add_status"
+        )
 
     with c2:
-        vehicle_description = st.text_input("vehcile description")
-        vehicle_reg = st.text_input("vehicle Reg")
+        vehicle_description = st.text_input("vehcile description", key="add_vdesc")
+        vehicle_reg = st.text_input("vehicle Reg", key="add_vreg")
 
     with c3:
-        collection_from = st.text_input("collection from")
-        delivery_to = st.text_input("delivery to")
+        collection_from = st.text_input("collection from", key="add_cfrom")
+        delivery_to = st.text_input("delivery to", key="add_cto")
 
     with c4:
-        job_amount = st.number_input("job amount", step=0.5, value=0.0)
-        job_expenses = st.selectbox("Job Expenses", JOB_EXPENSE_OPTIONS, index=0)
-        expenses_amount = st.number_input("expenses Amount", step=0.5, value=0.0)
-        auth_code = st.text_input("Auth code")
-        waiting_time_raw = st.text_input("waiting time (e.g. 10-12 or 10:30-12:15)", value="")
+        job_amount = st.number_input("job amount", step=0.5, value=0.0, key="add_amt")
+        job_expenses = st.selectbox("Job Expenses", JOB_EXPENSE_OPTIONS, index=0, key="add_exp_type")
+        expenses_amount = st.number_input("expenses Amount", step=0.5, value=0.0, key="add_exp_amt")
+        auth_code = st.text_input("Auth code", key="add_auth")
+        waiting_time_raw = st.text_input(
+            "waiting time (e.g. 10-12 or 10:30-12:15)", value="", key="add_wait"
+        )
 
         w_hours, w_norm = parse_waiting_time(waiting_time_raw)
         if waiting_time_raw.strip():
             if w_hours is None:
                 st.error("Waiting time format invalid.")
             else:
-                st.write(
-                    f"Waiting: **{w_norm}** | Hours: **{w_hours:.2f}** | Owed: **£{(w_hours*WAITING_RATE):.2f}**"
-                )
+                st.write(f"Waiting: **{w_norm}** | Hours: **{w_hours:.2f}** | Owed: **£{(w_hours*WAITING_RATE):.2f}**")
 
-    comments = st.text_area("comments")
+    comments = st.text_area("comments", key="add_comments")
 
-    if st.button("Save entry"):
+    if st.button("Save entry", key="add_save"):
         jn = clean_job_number(job_number)
         if not jn:
             st.error("job number is required.")
@@ -385,7 +387,6 @@ with tab2:
     st.divider()
     st.markdown("### Records (strict column order)")
 
-    # Build view_df with UI headers
     view_df = report_df.copy().rename(
         columns={
             "work_date": "Date",
@@ -411,35 +412,85 @@ with tab2:
     if "id" not in view_df.columns:
         st.error("Cannot edit: 'id' column missing from data.")
     else:
-        # ---------- FORM EDIT ----------
         with st.expander("Edit a single row (Form)"):
             ids = view_df["id"].astype(int).tolist()
-            selected_id = st.selectbox("Select row id", options=ids, index=0)
+            selected_id = st.selectbox("Select row id", options=ids, index=0, key="edit_select_id")
 
             row = view_df[view_df["id"] == selected_id].iloc[0]
 
             f1, f2, f3, f4 = st.columns(4)
             with f1:
-                f_job_status = st.selectbox("job status", STATUS_OPTIONS, index=STATUS_OPTIONS.index(row["job status"]))
-                f_job_type = st.selectbox("job type", JOB_TYPE_OPTIONS, index=JOB_TYPE_OPTIONS.index(row["job type"]))
-            with f2:
-                f_vdesc = st.text_input("vehcile description", value=str(row["vehcile description"] or ""))
-                f_vreg = st.text_input("vehicle Reg", value=str(row["vehicle Reg"] or ""))
-            with f3:
-                f_cfrom = st.text_input("collection from", value=str(row["collection from"] or ""))
-                f_cto = st.text_input("delivery to", value=str(row["delivery to"] or ""))
-            with f4:
-                f_job_amt = st.number_input("job amount", step=0.5, value=float(row["job amount"] or 0.0))
-                f_job_exp = st.selectbox(
-                    "Job Expenses", JOB_EXPENSE_OPTIONS, index=JOB_EXPENSE_OPTIONS.index(row["Job Expenses"])
+                f_job_status = st.selectbox(
+                    "job status",
+                    STATUS_OPTIONS,
+                    index=STATUS_OPTIONS.index(row["job status"]),
+                    key=f"edit_status_{selected_id}",
                 )
-                f_exp_amt = st.number_input("expenses Amount", step=0.5, value=float(row["expenses Amount"] or 0.0))
-                f_auth = st.text_input("Auth code", value=str(row["Auth code"] or ""))
+                f_job_type = st.selectbox(
+                    "job type",
+                    JOB_TYPE_OPTIONS,
+                    index=JOB_TYPE_OPTIONS.index(row["job type"]),
+                    key=f"edit_type_{selected_id}",
+                )
+            with f2:
+                f_vdesc = st.text_input(
+                    "vehcile description",
+                    value=str(row["vehcile description"] or ""),
+                    key=f"edit_vdesc_{selected_id}",
+                )
+                f_vreg = st.text_input(
+                    "vehicle Reg",
+                    value=str(row["vehicle Reg"] or ""),
+                    key=f"edit_vreg_{selected_id}",
+                )
+            with f3:
+                f_cfrom = st.text_input(
+                    "collection from",
+                    value=str(row["collection from"] or ""),
+                    key=f"edit_cfrom_{selected_id}",
+                )
+                f_cto = st.text_input(
+                    "delivery to",
+                    value=str(row["delivery to"] or ""),
+                    key=f"edit_cto_{selected_id}",
+                )
+            with f4:
+                f_job_amt = st.number_input(
+                    "job amount",
+                    step=0.5,
+                    value=float(row["job amount"] or 0.0),
+                    key=f"edit_amt_{selected_id}",
+                )
+                f_job_exp = st.selectbox(
+                    "Job Expenses",
+                    JOB_EXPENSE_OPTIONS,
+                    index=JOB_EXPENSE_OPTIONS.index(row["Job Expenses"]),
+                    key=f"edit_exp_type_{selected_id}",
+                )
+                f_exp_amt = st.number_input(
+                    "expenses Amount",
+                    step=0.5,
+                    value=float(row["expenses Amount"] or 0.0),
+                    key=f"edit_exp_amt_{selected_id}",
+                )
+                f_auth = st.text_input(
+                    "Auth code",
+                    value=str(row["Auth code"] or ""),
+                    key=f"edit_auth_{selected_id}",
+                )
 
-            f_wait = st.text_input("waiting time", value=str(row["waiting time"] or ""))
-            f_comments = st.text_area("comments", value=str(row["comments"] or ""))
+            f_wait = st.text_input(
+                "waiting time",
+                value=str(row["waiting time"] or ""),
+                key=f"edit_wait_{selected_id}",
+            )
+            f_comments = st.text_area(
+                "comments",
+                value=str(row["comments"] or ""),
+                key=f"edit_comments_{selected_id}",
+            )
 
-            if st.button("Save row"):
+            if st.button("Save row", key=f"edit_save_{selected_id}"):
                 updates = {
                     "job_status": normalize_status(f_job_status),
                     "category": normalize_job_type(f_job_type),
@@ -458,7 +509,6 @@ with tab2:
                 st.success("Row updated.")
                 st.rerun()
 
-        # ---------- INLINE EDIT ----------
         st.caption("Inline edits: change values in the table, then click **Save edited rows**.")
         editor_base = view_df.set_index("id")
 
@@ -470,7 +520,7 @@ with tab2:
             key="records_editor",
         )
 
-        if st.button("Save edited rows"):
+        if st.button("Save edited rows", key="records_save"):
             before = editor_base[UI_COLUMNS]
             after = edited
 
@@ -515,7 +565,6 @@ with tab2:
                             continue
 
                         if new_val != old_val:
-                            # minimal normalization on key fields
                             if db_col == "job_status":
                                 updates[db_col] = normalize_status(str(new_val))
                             elif db_col == "category":
