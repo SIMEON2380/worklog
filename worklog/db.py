@@ -1,7 +1,7 @@
 # worklog/db.py
 import os
 import sqlite3
-from typing import Any, Dict, Optional, Tuple, List
+from typing import Any, Dict, Optional, Tuple
 
 import pandas as pd
 
@@ -17,45 +17,14 @@ def get_db_path() -> str:
 def get_conn() -> sqlite3.Connection:
     conn = sqlite3.connect(get_db_path())
     conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA foreign_keys = ON;")
     conn.execute("PRAGMA journal_mode = WAL;")
     return conn
 
 
-def _existing_columns(conn: sqlite3.Connection) -> set[str]:
-    rows = conn.execute(f"PRAGMA table_info({TABLE_NAME});").fetchall()
-    return {r["name"] for r in rows}
-
-
 def init_db() -> None:
-    """
-    Your table already exists. We ONLY do safe schema upgrades here:
-    add columns your new UI expects (postcode/customer_name/site_address),
-    and optionally updated_at.
-    """
-    conn = get_conn()
-    try:
-        cols = _existing_columns(conn)
+    # Your table already exists. We do NOT alter schema.
+    return
 
-        # Add columns the UI expects but your old schema doesn't have.
-        # These are safe ADD COLUMN operations (no data loss).
-        upgrades: List[Tuple[str, str]] = [
-            ("postcode", "TEXT"),
-            ("customer_name", "TEXT"),
-            ("site_address", "TEXT"),
-            ("updated_at", "TEXT"),
-        ]
-
-        for col, ddl in upgrades:
-            if col not in cols:
-                conn.execute(f"ALTER TABLE {TABLE_NAME} ADD COLUMN {col} {ddl};")
-
-        conn.commit()
-    finally:
-        conn.close()
-
-
-# --- Internal helpers ---------------------------------------------------------
 
 def _latest_row_id_for_job(conn: sqlite3.Connection, job_id: str) -> Optional[int]:
     row = conn.execute(
@@ -74,43 +43,15 @@ def _latest_row_id_for_job(conn: sqlite3.Connection, job_id: str) -> Optional[in
     return int(row["id"]) if row else None
 
 
-def _to_ui_row(db_row: sqlite3.Row) -> Dict[str, Any]:
-    """
-    Convert DB row (old schema) to keys expected by app.py.
-    """
-    return {
-        "job_number": db_row["job_id"],
-        "job_type": db_row["category"],
-        "status": db_row["job_status"],
-        "vehicle_description": db_row["vehicle_description"],
-        "postcode": db_row["postcode"],
-        "expense_type": db_row["job_expenses"],
-        "customer_name": db_row["customer_name"],
-        "site_address": db_row["site_address"],
-        "notes": db_row["comments"],
-        # keep some useful originals if you ever want to show them
-        "id": db_row["id"],
-        "work_date": db_row["work_date"],
-        "hours": db_row["hours"],
-        "amount": db_row["amount"],
-        "created_at": db_row["created_at"],
-        "updated_at": db_row["updated_at"],
-    }
-
-
-# --- Public API used by app.py -----------------------------------------------
-
 def list_jobs(search: str = "", limit: int = 500) -> pd.DataFrame:
     """
-    The old table can have multiple rows per job_id (because unique index is work_date + job_id).
-    For the UI, we show ONE row per job_id: the latest one.
+    Show one row per job_id (latest entry), but keep ORIGINAL column meaning.
+    We alias to UI-friendly names ONLY if your UI expects them.
     """
     conn = get_conn()
     search = (search or "").strip()
 
     try:
-        # Use a window function to pick the latest row per job_id.
-        # (SQLite supports this in modern versions.)
         base = f"""
         WITH ranked AS (
           SELECT
@@ -127,20 +68,21 @@ def list_jobs(search: str = "", limit: int = 500) -> pd.DataFrame:
         SELECT
           id,
           work_date,
+          description,
           hours,
           amount,
-          created_at,
-          updated_at,
 
-          job_id            AS job_number,
-          category          AS job_type,
-          job_status        AS status,
+          job_id               AS job_number,
+          category             AS job_type,
+          job_status           AS status,
           vehicle_description,
-          postcode,
-          job_expenses      AS expense_type,
-          customer_name,
-          site_address,
-          comments          AS notes
+          vehicle_reg,
+          collection_from,
+          delivery_to,
+          job_expenses,
+          expenses_amount,
+          auth_code,
+          comments
 
         FROM ranked
         WHERE rn = 1
@@ -152,14 +94,16 @@ def list_jobs(search: str = "", limit: int = 500) -> pd.DataFrame:
             sql = base + """
               AND (
                 job_id LIKE ?
-                OR COALESCE(postcode,'') LIKE ?
                 OR COALESCE(vehicle_description,'') LIKE ?
-                OR COALESCE(customer_name,'') LIKE ?
+                OR COALESCE(vehicle_reg,'') LIKE ?
+                OR COALESCE(collection_from,'') LIKE ?
+                OR COALESCE(delivery_to,'') LIKE ?
+                OR COALESCE(comments,'') LIKE ?
               )
               ORDER BY job_number DESC
               LIMIT ?
             """
-            params = (like, like, like, like, int(limit))
+            params = (like, like, like, like, like, like, int(limit))
         else:
             sql = base + """
               ORDER BY job_number DESC
@@ -167,16 +111,14 @@ def list_jobs(search: str = "", limit: int = 500) -> pd.DataFrame:
             """
             params = (int(limit),)
 
-        df = pd.read_sql_query(sql, conn, params=params)
-        return df
+        return pd.read_sql_query(sql, conn, params=params)
     finally:
         conn.close()
 
 
 def get_job_by_number(job_number: str) -> Optional[Dict[str, Any]]:
     """
-    In your DB: job_number == job_id.
-    Returns the latest row for that job_id mapped to UI field names.
+    Returns latest row for job_id, mapped to the names your UI uses.
     """
     conn = get_conn()
     try:
@@ -194,17 +136,31 @@ def get_job_by_number(job_number: str) -> Optional[Dict[str, Any]]:
             (job_number,),
         ).fetchone()
 
-        return _to_ui_row(row) if row else None
+        if not row:
+            return None
+
+        # Map to what the UI expects
+        return {
+            "job_number": row["job_id"],
+            "job_type": row["category"],
+            "status": row["job_status"],
+            "vehicle_description": row["vehicle_description"],
+            "vehicle_reg": row["vehicle_reg"],
+            "collection_from": row["collection_from"],
+            "delivery_to": row["delivery_to"],
+            "job_expenses": row["job_expenses"],
+            "expenses_amount": row["expenses_amount"],
+            "auth_code": row["auth_code"],
+            "comments": row["comments"],
+        }
     finally:
         conn.close()
 
 
 def upsert_job(record: Dict[str, Any]) -> None:
     """
-    Your UI doesn't supply work_date, but your old schema is date-based.
-    So we treat "upsert" as:
-      - update latest row for that job_id if it exists
-      - else insert a new row with work_date = today and blank numeric fields
+    Update latest row for job_id if it exists; otherwise insert a new row for today.
+    Only touches ORIGINAL columns.
     """
     job_id = (record or {}).get("job_number")
     if not job_id:
@@ -212,9 +168,9 @@ def upsert_job(record: Dict[str, Any]) -> None:
 
     conn = get_conn()
     try:
-        existing_id = _latest_row_id_for_job(conn, job_id)
+        row_id = _latest_row_id_for_job(conn, job_id)
 
-        if existing_id is not None:
+        if row_id is not None:
             conn.execute(
                 f"""
                 UPDATE {TABLE_NAME}
@@ -222,24 +178,27 @@ def upsert_job(record: Dict[str, Any]) -> None:
                   category = ?,
                   job_status = ?,
                   vehicle_description = ?,
-                  postcode = ?,
+                  vehicle_reg = ?,
+                  collection_from = ?,
+                  delivery_to = ?,
                   job_expenses = ?,
-                  customer_name = ?,
-                  site_address = ?,
-                  comments = ?,
-                  updated_at = datetime('now')
+                  expenses_amount = ?,
+                  auth_code = ?,
+                  comments = ?
                 WHERE id = ?;
                 """,
                 (
                     record.get("job_type"),
                     record.get("status"),
                     record.get("vehicle_description"),
-                    record.get("postcode"),
-                    record.get("expense_type"),
-                    record.get("customer_name"),
-                    record.get("site_address"),
-                    record.get("notes"),
-                    existing_id,
+                    record.get("vehicle_reg"),
+                    record.get("collection_from"),
+                    record.get("delivery_to"),
+                    record.get("job_expenses"),
+                    record.get("expenses_amount"),
+                    record.get("auth_code"),
+                    record.get("comments"),
+                    row_id,
                 ),
             )
         else:
@@ -247,23 +206,21 @@ def upsert_job(record: Dict[str, Any]) -> None:
                 f"""
                 INSERT INTO {TABLE_NAME} (
                   work_date, description, hours, amount,
-                  job_id, category,
-                  job_status,
-                  vehicle_description, postcode,
-                  job_expenses,
-                  customer_name, site_address,
-                  comments,
-                  created_at, updated_at
+                  job_id, category, job_status,
+                  vehicle_description, vehicle_reg,
+                  collection_from, delivery_to,
+                  job_expenses, expenses_amount,
+                  auth_code, comments,
+                  created_at
                 )
                 VALUES (
                   date('now'), '', 0, 0,
+                  ?, ?, ?,
                   ?, ?,
-                  ?,
                   ?, ?,
-                  ?,
                   ?, ?,
-                  ?,
-                  datetime('now'), datetime('now')
+                  ?, ?,
+                  datetime('now')
                 );
                 """,
                 (
@@ -271,11 +228,13 @@ def upsert_job(record: Dict[str, Any]) -> None:
                     record.get("job_type"),
                     record.get("status"),
                     record.get("vehicle_description"),
-                    record.get("postcode"),
-                    record.get("expense_type"),
-                    record.get("customer_name"),
-                    record.get("site_address"),
-                    record.get("notes"),
+                    record.get("vehicle_reg"),
+                    record.get("collection_from"),
+                    record.get("delivery_to"),
+                    record.get("job_expenses"),
+                    record.get("expenses_amount"),
+                    record.get("auth_code"),
+                    record.get("comments"),
                 ),
             )
 
@@ -290,15 +249,16 @@ def update_job(
     job_type: str = "",
     status: str = "",
     vehicle_description: str = "",
-    postcode: str = "",
-    expense_type: str = "",
-    customer_name: str = "",
-    site_address: str = "",
-    notes: str = "",
+    vehicle_reg: str = "",
+    collection_from: str = "",
+    delivery_to: str = "",
+    job_expenses: str = "",
+    expenses_amount: float = 0.0,
+    auth_code: str = "",
+    comments: str = "",
 ) -> bool:
     """
-    Updates the latest row for that job_id.
-    Returns True if updated, False if job doesn't exist.
+    Update latest row for job_id. Only ORIGINAL columns.
     """
     conn = get_conn()
     try:
@@ -313,23 +273,26 @@ def update_job(
               category = ?,
               job_status = ?,
               vehicle_description = ?,
-              postcode = ?,
+              vehicle_reg = ?,
+              collection_from = ?,
+              delivery_to = ?,
               job_expenses = ?,
-              customer_name = ?,
-              site_address = ?,
-              comments = ?,
-              updated_at = datetime('now')
+              expenses_amount = ?,
+              auth_code = ?,
+              comments = ?
             WHERE id = ?;
             """,
             (
                 job_type,
                 status,
                 vehicle_description,
-                postcode,
-                expense_type,
-                customer_name,
-                site_address,
-                notes,
+                vehicle_reg,
+                collection_from,
+                delivery_to,
+                job_expenses,
+                expenses_amount,
+                auth_code,
+                comments,
                 row_id,
             ),
         )
@@ -341,7 +304,7 @@ def update_job(
 
 def delete_job(job_number: str) -> bool:
     """
-    Deletes ALL rows for that job_id (because the old schema can have multiple days per job).
+    Deletes all rows for job_id (matches your old data model).
     """
     conn = get_conn()
     try:
@@ -353,12 +316,3 @@ def delete_job(job_number: str) -> bool:
         return cur.rowcount > 0
     finally:
         conn.close()
-
-
-# Backwards-compat alias (if you still import these somewhere)
-def get_job_by_number_or_none(job_number: str) -> Optional[Dict[str, Any]]:
-    return get_job_by_number(job_number)
-
-
-def update_job_by_number(*args, **kwargs) -> bool:
-    return update_job(*args, **kwargs)
