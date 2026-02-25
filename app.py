@@ -383,8 +383,6 @@ def parse_waiting_time(text: str) -> Tuple[Optional[float], Optional[str]]:
 def read_all() -> pd.DataFrame:
     with get_conn() as conn:
         df = pd.read_sql_query(f"SELECT * FROM {CFG.TABLE_NAME} ORDER BY work_date DESC, id DESC", conn)
-
->>>>>>> 30ef248 (Fix weekly summary column KeyError)
     if df.empty:
         return pd.DataFrame(columns=CFG.EXPECTED_DB_COLS)
 
