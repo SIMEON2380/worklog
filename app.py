@@ -939,16 +939,21 @@ def get_live_version() -> str:
 def style_records(df_ui: pd.DataFrame) -> Styler:
     def row_style(row: pd.Series):
         status = str(row.get("job status", "")).strip().lower()
+
+        base_style = "color: #111; font-weight: 600;"  # darker + semi-bold
+
         if status == "paid":
-            return ["background-color: #c6f6d5"] * len(row)  # green
+            return [base_style + "background-color: #d1fae5;"] * len(row)  # soft green
         if status == "withdraw":
-            return ["background-color: #ffe4b5"] * len(row)  # orange
+            return [base_style + "background-color: #fde68a;"] * len(row)  # soft amber
         if status == "aborted":
-            return ["background-color: #fecaca"] * len(row)  # red
-        return [""] * len(row)
+            return [base_style + "background-color: #fecaca;"] * len(row)  # soft red
 
-    return df_ui.style.apply(row_style, axis=1)
+        return [base_style] * len(row)
 
+    styled = df_ui.style.apply(row_style, axis=1)
+
+    return styled
 
 # =========================
 # UI helpers
