@@ -1214,6 +1214,7 @@ def render_upload_tab():
 
     try:
         up_df = pd.read_csv(up) if up.name.lower().endswith(".csv") else pd.read_excel(up)
+        
         st.dataframe(up_df.head(30), use_container_width=True)
         if st.button("Import into database"):
             n = insert_many(up_df)
