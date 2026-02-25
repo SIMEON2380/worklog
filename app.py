@@ -1,56 +1,35 @@
-import streamlit as st
+import os
+import re
+import sqlite3
+import subprocess
+from dataclasses import dataclass
+from datetime import date, timedelta
+from typing import Optional, Tuple, Any, Dict
+
 import pandas as pd
+import streamlit as st
 
-from worklog.constants import (
-    UI_COLUMNS,
-    JOB_TYPE_OPTIONS,
-    STATUS_OPTIONS,
-    EXPENSE_TYPE_OPTIONS,
-)
-from worklog.db import (
-    init_db,
-    upsert_job,
-    list_jobs,
-    get_job_by_number,
-    update_job,
-    delete_job,
-)
-from worklog.normalize import (
-    clean_job_number,
-    clean_text,
-    clean_postcode,
-    normalize_job_type,
-    normalize_status,
-    normalize_expense_type,
-)
 
-st.set_page_config(page_title="Worklog", layout="wide")
+# =========================
+# Config
+# =========================
+@dataclass(frozen=True)
+class Config:
+    APP_TITLE: str = "Worklog"
 
-# --- boot ---
-init_db()
+    # systemd: Environment=WORKLOG_DB_DIR=/var/lib/worklog
+    DB_DIR: str = os.environ.get("WORKLOG_DB_DIR", "/var/lib/worklog")
+    TABLE_NAME: str = "work_logs"
 
-st.title("Worklog")
+    WAITING_RATE: float = 7.50
 
-tab_add, tab_view, tab_edit = st.tabs(["Add / Upsert", "View", "Edit by Job Number"])
+    STATUS_OPTIONS = ["Start", "Completed", "Aborted", "Paid", "Pending", "Withdraw"]
+    JOB_TYPE_OPTIONS = ["STRD Trade Plate", "Inspect and Collect", "Inspect and Collect 2"]
+    JOB_EXPENSE_OPTIONS = ["uber", "taxi", "train", "toll", "other"]
 
-<<<<<<< HEAD
-# ----------------------------
-# ADD / UPSERT
-# ----------------------------
-with tab_add:
-    st.subheader("Add / Upsert Job")
-
-    with st.form("add_job_form"):
-        c1, c2, c3 = st.columns(3)
-
-        with c1:
-            job_number = st.text_input("Job Number")
-            job_type = st.selectbox("Job Type", JOB_TYPE_OPTIONS, key="add_job_type")
-            status = st.selectbox("Status", STATUS_OPTIONS, key="add_status")
-=======
-# Inspect & Collect pay rate
-INSPECT_COLLECT_RATE = 8.00
-INSPECT_COLLECT_TYPES = {"Inspect and Collect", "Inspect and Collect 2"}
+    # Inspect & Collect pay rate
+    INSPECT_COLLECT_RATE: float = 8.00
+    INSPECT_COLLECT_TYPES = {"Inspect and Collect", "Inspect and Collect 2"}
 
     # NOTE: keep your existing labels (including typos) to avoid breaking UI expectations
     UI_COLUMNS = [
@@ -70,78 +49,55 @@ INSPECT_COLLECT_TYPES = {"Inspect and Collect", "Inspect and Collect 2"}
         "comments",
     ]
 
-EXPECTED_DB_COLS = [
-    "id",
-    "work_date",
-    "description",
-    "hours",
-    "amount",
-    "job_id",
-    "category",
-    "job_status",
-    "waiting_time",
-    "waiting_hours",
-    "waiting_amount",
-    "vehicle_description",
-    "vehicle_reg",
-    "collection_from",
-    "delivery_to",
-    "job_expenses",
-    "expenses_amount",
-    "auth_code",
-    "comments",
-    "created_at",
-]
->>>>>>> 30ef248 (Fix weekly summary column KeyError)
+    EXPECTED_DB_COLS = [
+        "id",
+        "work_date",
+        "description",
+        "hours",
+        "amount",
+        "job_id",
+        "category",
+        "job_status",
+        "waiting_time",
+        "waiting_hours",
+        "waiting_amount",
+        "vehicle_description",
+        "vehicle_reg",
+        "collection_from",
+        "delivery_to",
+        "job_expenses",
+        "expenses_amount",
+        "auth_code",
+        "comments",
+        "created_at",
+    ]
 
-        with c2:
-            vehicle_description = st.text_input("Vehicle Description")
-            postcode = st.text_input("Postcode")
-            expense_type = st.selectbox("Expense Type", EXPENSE_TYPE_OPTIONS, key="add_expense_type")
+    @property
+    def DB_PATH(self) -> str:
+        return os.path.join(self.DB_DIR, "worklog.db")
 
-        with c3:
-            customer_name = st.text_input("Customer Name")
-            site_address = st.text_input("Site Address")
-            notes = st.text_area("Notes", height=110)
 
-        submitted = st.form_submit_button("Save")
+CFG = Config()
 
-        if submitted:
-            job_number_n = clean_job_number(job_number)
-            if not job_number_n:
-                st.error("Job Number is required.")
-            else:
-                record = {
-                    "job_number": job_number_n,
-                    "job_type": normalize_job_type(job_type),
-                    "status": normalize_status(status),
-                    "vehicle_description": clean_text(vehicle_description),
-                    "postcode": clean_postcode(postcode),
-                    "expense_type": normalize_expense_type(expense_type),
-                    "customer_name": clean_text(customer_name),
-                    "site_address": clean_text(site_address),
-                    "notes": clean_text(notes),
-                }
-                upsert_job(record)
-                st.success(f"Saved job {job_number_n}")
 
-# ----------------------------
-# VIEW
-# ----------------------------
-with tab_view:
-    st.subheader("All Jobs")
+# =========================
+# Normalization helpers
+# =========================
+def normalize_status(x: Any) -> str:
+    s = str(x or "").strip()
+    return s if s in CFG.STATUS_OPTIONS else "Pending"
 
-    colA, colB, colC = st.columns([2, 1, 1])
-    with colA:
-        search = st.text_input("Search (job number / postcode / vehicle / customer)", key="view_search")
-    with colB:
-        limit = st.number_input("Max rows", min_value=50, max_value=5000, value=500, step=50)
-    with colC:
-        refresh = st.button("Refresh")
 
-<<<<<<< HEAD
-    df = list_jobs(search=search, limit=int(limit))
-=======
+def normalize_job_type(x: Any) -> str:
+    s = str(x or "").strip()
+    return s if s in CFG.JOB_TYPE_OPTIONS else CFG.JOB_TYPE_OPTIONS[0]
+
+
+def normalize_expense_type(x: Any) -> str:
+    s = str(x or "").strip().lower()
+    return s if s in CFG.JOB_EXPENSE_OPTIONS else "other"
+
+
 def clean_job_number(val: Any) -> str:
     """
     Fix Excel numeric job ids like 11623733.0 -> 11623733
@@ -710,7 +666,6 @@ def insert_many(df: pd.DataFrame) -> int:
     df2["job_status"] = df2["job_status"].apply(normalize_status)
 
     df2["waiting_raw"] = df2[c_waiting].fillna("").astype(str) if c_waiting else ""
-
     df2["comments"] = df2[c_comments].fillna("").astype(str).str.strip() if c_comments else ""
 
     wh_list, wn_list, wa_list = [], [], []
@@ -1038,42 +993,211 @@ def render_sidebar_actions():
         if st.button("Refresh data"):
             st.rerun()
 
-    st.divider()
-    st.subheader("Delete Job (by Job Number)")
+        st.divider()
+        st.caption("DB in use:")
+        st.code(CFG.DB_PATH)
+        st.caption(f"Live version: {get_live_version()}")
 
-    del_job = st.text_input("Job Number to delete", key="delete_job_number")
-    if st.button("Delete", type="primary"):
-        del_job_n = clean_job_number(del_job)
-        if not del_job_n:
-            st.error("Enter a job number.")
+
+def render_sidebar_filters(df_all: pd.DataFrame) -> Tuple[pd.DataFrame, date, date]:
+    min_d, max_d = safe_date_bounds(df_all["work_date"] if not df_all.empty else None)
+
+    today = date.today()
+    default_start = today
+    default_end = today
+    max_picker = max(max_d, today)
+
+    with st.sidebar:
+        st.header("Filters")
+        date_val = st.date_input(
+            "Work date range",
+            value=(default_start, default_end),
+            min_value=min_d,
+            max_value=max_picker,
+        )
+        if isinstance(date_val, (tuple, list)) and len(date_val) == 2:
+            start_d, end_d = date_val
         else:
-            ok = delete_job(del_job_n)
-            if ok:
-                st.success(f"Deleted {del_job_n}")
+            start_d = date_val
+            end_d = date_val
+
+        status_filter = st.multiselect("Job status", options=CFG.STATUS_OPTIONS, default=CFG.STATUS_OPTIONS)
+        search_txt = st.text_input("Search (job / reg / auth / locations)", value="").strip()
+
+    df = df_all.copy()
+    if not df.empty:
+        df = df[df["work_date"].notna()].copy()
+        df = df[(df["work_date"] >= start_d) & (df["work_date"] <= end_d)]
+        df = df[df["job_status"].isin(status_filter)]
+        if search_txt:
+            mask = (
+                df["job_id"].astype(str).str.contains(search_txt, case=False, na=False)
+                | df["vehicle_reg"].astype(str).str.contains(search_txt, case=False, na=False)
+                | df["auth_code"].astype(str).str.contains(search_txt, case=False, na=False)
+                | df["collection_from"].astype(str).str.contains(search_txt, case=False, na=False)
+                | df["delivery_to"].astype(str).str.contains(search_txt, case=False, na=False)
+                | df["comments"].astype(str).str.contains(search_txt, case=False, na=False)
+            )
+            df = df[mask]
+
+    return df, start_d, end_d
+
+
+def compute_money_totals(report_df: pd.DataFrame) -> Dict[str, float]:
+    """Totals exclude Withdraw, and include Inspect & Collect pay."""
+    if report_df.empty:
+        return {
+            "total_job": 0.0,
+            "total_exp": 0.0,
+            "total_wait": 0.0,
+            "ic_pay_total": 0.0,
+            "total_earned": 0.0,
+        }
+
+    money_df = report_df[report_df["job_status"].astype(str).str.lower().str.strip() != "withdraw"].copy()
+
+    total_job = pd.to_numeric(money_df["amount"], errors="coerce").fillna(0).sum()
+    total_exp = pd.to_numeric(money_df["expenses_amount"], errors="coerce").fillna(0).sum()
+    total_wait = pd.to_numeric(money_df["waiting_amount"], errors="coerce").fillna(0).sum()
+
+    ic_pay_total = float(
+        len(money_df[money_df["category"].isin(CFG.INSPECT_COLLECT_TYPES)]) * CFG.INSPECT_COLLECT_RATE
+    )
+
+    total_earned = float(total_job + total_exp + total_wait + ic_pay_total)
+
+    return {
+        "total_job": float(total_job),
+        "total_exp": float(total_exp),
+        "total_wait": float(total_wait),
+        "ic_pay_total": float(ic_pay_total),
+        "total_earned": float(total_earned),
+    }
+
+
+def render_dashboard_tab(df: pd.DataFrame):
+    st.subheader("Dashboard")
+
+    if df.empty:
+        st.info("No records in this range.")
+        return
+
+    report_df = dedup_for_reporting(df)
+    status_counts = df["job_status"].fillna("Unknown").value_counts()
+
+    total_jobs = int(len(report_df))
+    cars_logged = int(report_df["vehicle_reg"].fillna("").astype(str).str.strip().ne("").sum())
+    unique_cars = int(
+        report_df["vehicle_reg"]
+        .fillna("")
+        .astype(str)
+        .str.strip()
+        .replace("", pd.NA)
+        .dropna()
+        .nunique()
+    )
+
+    d1, d2, d3, d4, d5, d6 = st.columns(6)
+    d1.metric("Total jobs (deduped)", f"{total_jobs:,}")
+    d2.metric("Cars logged", f"{cars_logged:,}")
+    d3.metric("Unique cars", f"{unique_cars:,}")
+    d4.metric("Withdraw", int(status_counts.get("Withdraw", 0)))
+    d5.metric("Aborted", int(status_counts.get("Aborted", 0)))
+    d6.metric("Paid", int(status_counts.get("Paid", 0)))
+
+    totals = compute_money_totals(report_df)
+
+    k1, k2, k3, k4, k5 = st.columns(5)
+    k1.metric("Job amount", f"£{totals['total_job']:,.2f}")
+    k2.metric("Expenses", f"£{totals['total_exp']:,.2f}")
+    k3.metric("Waiting owed", f"£{totals['total_wait']:,.2f}")
+    k4.metric("Inspect & Collect pay", f"£{totals['ic_pay_total']:,.2f}")
+    k5.metric("Total owed", f"£{totals['total_earned']:,.2f}")
+
+
+def clear_add_entry_form():
+    st.session_state["add_date"] = date.today()
+    st.session_state["add_job_number"] = ""
+    st.session_state["add_job_type"] = CFG.JOB_TYPE_OPTIONS[0]
+    st.session_state["add_job_status"] = "Pending"
+    st.session_state["add_vdesc"] = ""
+    st.session_state["add_vreg"] = ""
+    st.session_state["add_from"] = ""
+    st.session_state["add_to"] = ""
+    st.session_state["add_amount"] = 0.0
+    st.session_state["add_exp_type"] = CFG.JOB_EXPENSE_OPTIONS[0]
+    st.session_state["add_exp_amt"] = 0.0
+    st.session_state["add_auth"] = ""
+    st.session_state["add_waiting"] = ""
+    st.session_state["add_comments"] = ""
+
+
+def render_add_entry_tab():
+    st.subheader("Add entry")
+
+    c1, c2, c3, c4 = st.columns(4)
+    with c1:
+        work_date_val = st.date_input("Date", value=date.today(), key="add_date")
+        job_number = st.text_input("job number (required)", key="add_job_number")
+        job_type = st.selectbox("job type", CFG.JOB_TYPE_OPTIONS, index=0, key="add_job_type")
+        job_status = st.selectbox("job status", CFG.STATUS_OPTIONS, index=CFG.STATUS_OPTIONS.index("Pending"), key="add_job_status")
+    with c2:
+        vehicle_description = st.text_input("vehcile description", key="add_vdesc")
+        vehicle_reg = st.text_input("vehicle Reg", key="add_vreg")
+    with c3:
+        collection_from = st.text_input("collection from", key="add_from")
+        delivery_to = st.text_input("delivery to", key="add_to")
+    with c4:
+        job_amount = st.number_input("job amount", step=0.5, value=0.0, key="add_amount")
+        job_expenses = st.selectbox("Job Expenses", CFG.JOB_EXPENSE_OPTIONS, index=0, key="add_exp_type")
+        expenses_amount = st.number_input("expenses Amount", step=0.5, value=0.0, key="add_exp_amt")
+        auth_code = st.text_input("Auth code", key="add_auth")
+        waiting_time_raw = st.text_input("waiting time (e.g. 10-12 or 10:30-12:15)", value="", key="add_waiting")
+
+        w_hours, w_norm = parse_waiting_time(waiting_time_raw)
+        if waiting_time_raw.strip():
+            if w_hours is None:
+                st.error("Waiting time format invalid. Use like 10-12 or 10:30-12:15.")
             else:
-                st.warning("Job number not found.")
+                st.write(f"Waiting: **{w_norm}** | Hours: **{w_hours:.2f}** | Owed: **£{(w_hours*CFG.WAITING_RATE):.2f}**")
 
-# ----------------------------
-# EDIT BY JOB NUMBER
-# ----------------------------
-with tab_edit:
-    st.subheader("Edit Job by Job Number")
+    comments = st.text_area("comments", key="add_comments")
 
-    job_number_input = st.text_input("Enter Job Number", key="edit_lookup_job_number")
+    if st.button("Save entry"):
+        jn = clean_job_number(job_number)
+        w_hours, _ = parse_waiting_time(waiting_time_raw)
+        if jn == "":
+            st.error("job number is required.")
+            return
+        if waiting_time_raw.strip() and w_hours is None:
+            st.error("Fix waiting time format before saving.")
+            return
 
-    if job_number_input:
-        job_number_n = clean_job_number(job_number_input)
-        if not job_number_n:
-            st.error("Invalid job number.")
-        else:
-            row = get_job_by_number(job_number_n)
+        try:
+            insert_row(
+                work_date_val=work_date_val,
+                job_number=jn,
+                job_type=job_type,
+                vehicle_description=vehicle_description,
+                vehicle_reg=vehicle_reg,
+                collection_from=collection_from,
+                delivery_to=delivery_to,
+                job_amount=float(job_amount) if job_amount is not None else None,
+                job_expenses=job_expenses,
+                expenses_amount=float(expenses_amount) if expenses_amount is not None else None,
+                auth_code=auth_code,
+                job_status=job_status,
+                waiting_time_raw=waiting_time_raw,
+                comments=comments,
+            )
+            st.success("Saved.")
+            clear_add_entry_form()
+            st.rerun()
+        except Exception as e:
+            st.error(f"Save failed: {e}")
 
-<<<<<<< HEAD
-            if row is None:
-                st.warning("Job number not found.")
-=======
-# -------- Upload --------
-with tab2:
+
+def render_upload_tab():
     st.subheader("Upload Excel/CSV")
     st.write(
         "Required: **Date** (or `work_date`) and **job number** (or `job_id`/`job_number`). "
@@ -1190,89 +1314,90 @@ def render_edit_section(df_all: pd.DataFrame):
     )
     st.session_state.edit_selected_job = selected_job_number
 
-            matches = read_rows_by_job_number(selected_job_number)
-            if matches.empty:
-                st.error("Could not load that job number from the database.")
->>>>>>> 30ef248 (Fix weekly summary column KeyError)
-            else:
-                st.caption(f"Editing job: **{job_number_n}**")
+    matches = read_rows_by_job_number(selected_job_number)
+    if matches.empty:
+        st.error("Could not load that job number from the database.")
+        return
 
-                # Build safe indexes (prevents crashes if DB has unexpected values)
-                def safe_index(options, value):
-                    return options.index(value) if value in options else 0
+    if len(matches) > 1:
+        m2 = matches.copy()
+        m2["work_date_str"] = m2["work_date"].astype(str)
+        m2["pick_label"] = m2.apply(
+            lambda r: f"{r.get('work_date_str')} | id {int(r.get('id'))} | {str(r.get('vehicle_reg') or '').strip()} | {str(r.get('auth_code') or '').strip()}",
+            axis=1,
+        )
+        labels = m2["pick_label"].tolist()
+        default_label = labels[0]
+        if st.session_state.edit_selected_row_id is not None:
+            hit = m2[m2["id"].astype(int) == int(st.session_state.edit_selected_row_id)]
+            if not hit.empty:
+                default_label = hit.iloc[0]["pick_label"]
 
-                with st.form("edit_job_form"):
-                    c1, c2, c3 = st.columns(3)
+        pick_label = st.selectbox(
+            "This job number has multiple rows — pick one",
+            options=labels,
+            index=labels.index(default_label),
+            key="edit_row_pick",
+        )
+        picked_row = m2[m2["pick_label"] == pick_label].iloc[0].to_dict()
+    else:
+        picked_row = matches.iloc[0].to_dict()
 
-                    with c1:
-                        job_type = st.selectbox(
-                            "Job Type",
-                            JOB_TYPE_OPTIONS,
-                            index=safe_index(JOB_TYPE_OPTIONS, row.get("job_type", "")),
-                            key="edit_job_type",
-                        )
-                        status = st.selectbox(
-                            "Status",
-                            STATUS_OPTIONS,
-                            index=safe_index(STATUS_OPTIONS, row.get("status", "")),
-                            key="edit_status",
-                        )
+    row_id = int(picked_row["id"])
+    st.session_state.edit_selected_row_id = row_id
 
-                    with c2:
-                        vehicle_description = st.text_input(
-                            "Vehicle Description",
-                            value=row.get("vehicle_description", "") or "",
-                            key="edit_vehicle_description",
-                        )
-                        postcode = st.text_input(
-                            "Postcode",
-                            value=row.get("postcode", "") or "",
-                            key="edit_postcode",
-                        )
+    cur_date_series = to_clean_date_series(pd.Series([picked_row.get("work_date")]))
+    cur_date = cur_date_series.iloc[0] if isinstance(cur_date_series.iloc[0], date) else date.today()
 
-                    with c3:
-                        expense_type = st.selectbox(
-                            "Expense Type",
-                            EXPENSE_TYPE_OPTIONS,
-                            index=safe_index(EXPENSE_TYPE_OPTIONS, row.get("expense_type", "")),
-                            key="edit_expense_type",
-                        )
-                        customer_name = st.text_input(
-                            "Customer Name",
-                            value=row.get("customer_name", "") or "",
-                            key="edit_customer_name",
-                        )
+    cur_job_number = clean_job_number(picked_row.get("job_id"))
+    cur_job_type = normalize_job_type(picked_row.get("category"))
+    cur_vdesc = str(picked_row.get("vehicle_description") or "").strip().upper()
+    cur_vreg = str(picked_row.get("vehicle_reg") or "").strip()
+    cur_from = str(picked_row.get("collection_from") or "").strip()
+    cur_to = str(picked_row.get("delivery_to") or "").strip()
+    cur_job_amount = float(picked_row.get("amount") or 0.0)
+    cur_job_exp = normalize_expense_type(picked_row.get("job_expenses"))
+    cur_exp_amt = float(picked_row.get("expenses_amount") or 0.0)
+    cur_auth = str(picked_row.get("auth_code") or "").strip()
+    cur_status = normalize_status(picked_row.get("job_status"))
+    cur_waiting = str(picked_row.get("waiting_time") or "").strip()
+    cur_comments = str(picked_row.get("comments") or "").strip()
 
-                    site_address = st.text_input(
-                        "Site Address",
-                        value=row.get("site_address", "") or "",
-                        key="edit_site_address",
-                    )
-                    notes = st.text_area(
-                        "Notes",
-                        value=row.get("notes", "") or "",
-                        height=120,
-                        key="edit_notes",
-                    )
+    nonce = st.session_state.edit_nonce
+    form_key = f"edit_form_{row_id}_{nonce}"
 
-                    submitted = st.form_submit_button("Update Job")
+    with st.form(form_key):
+        c1, c2, c3, c4 = st.columns(4)
 
-<<<<<<< HEAD
-                    if submitted:
-                        update_job(
-                            job_number=job_number_n,
-                            job_type=normalize_job_type(job_type),
-                            status=normalize_status(status),
-                            vehicle_description=clean_text(vehicle_description),
-                            postcode=clean_postcode(postcode),
-                            expense_type=normalize_expense_type(expense_type),
-                            customer_name=clean_text(customer_name),
-                            site_address=clean_text(site_address),
-                            notes=clean_text(notes),
-                        )
-                        st.success("Job updated.")
-=======
-                    new_comments = st.text_area("comments", value=cur_comments, key=f"e_comments_{row_id}_{nonce}")
+        with c1:
+            new_date = st.date_input("Date", value=cur_date, key=f"e_date_{row_id}_{nonce}")
+            new_job_number = st.text_input("job number (required)", value=cur_job_number, key=f"e_job_{row_id}_{nonce}")
+            new_job_type = st.selectbox("job type", CFG.JOB_TYPE_OPTIONS, index=CFG.JOB_TYPE_OPTIONS.index(cur_job_type), key=f"e_type_{row_id}_{nonce}")
+            new_status = st.selectbox("job status", CFG.STATUS_OPTIONS, index=CFG.STATUS_OPTIONS.index(cur_status), key=f"e_status_{row_id}_{nonce}")
+
+        with c2:
+            new_vdesc = st.text_input("vehcile description", value=cur_vdesc, key=f"e_vdesc_{row_id}_{nonce}")
+            new_vreg = st.text_input("vehicle Reg", value=cur_vreg, key=f"e_vreg_{row_id}_{nonce}")
+
+        with c3:
+            new_from = st.text_input("collection from", value=cur_from, key=f"e_from_{row_id}_{nonce}")
+            new_to = st.text_input("delivery to", value=cur_to, key=f"e_to_{row_id}_{nonce}")
+
+        with c4:
+            new_job_amount = st.number_input("job amount", step=0.5, value=float(cur_job_amount), key=f"e_amt_{row_id}_{nonce}")
+            new_job_expenses = st.selectbox("Job Expenses", CFG.JOB_EXPENSE_OPTIONS, index=CFG.JOB_EXPENSE_OPTIONS.index(cur_job_exp), key=f"e_expt_{row_id}_{nonce}")
+            new_exp_amt = st.number_input("expenses Amount", step=0.5, value=float(cur_exp_amt), key=f"e_expa_{row_id}_{nonce}")
+            new_auth = st.text_input("Auth code", value=cur_auth, key=f"e_auth_{row_id}_{nonce}")
+
+            new_waiting_raw = st.text_input("waiting time", value=cur_waiting, key=f"e_wait_{row_id}_{nonce}")
+            wh, wn = parse_waiting_time(new_waiting_raw)
+            if new_waiting_raw.strip():
+                if wh is None:
+                    st.error("Waiting time format invalid.")
+                else:
+                    st.write(f"Waiting: **{wn}** | Hours: **{wh:.2f}** | Owed: **£{(wh*CFG.WAITING_RATE):.2f}**")
+
+        new_comments = st.text_area("comments", value=cur_comments, key=f"e_comments_{row_id}_{nonce}")
 
         cbtn1, cbtn2 = st.columns(2)
         with cbtn1:
@@ -1427,11 +1552,66 @@ def render_weekly_summary(report_df: pd.DataFrame):
     weekly["total_owed"] = weekly["job_amount"] + weekly["waiting_owed"] + weekly["expenses_amount"]
     st.dataframe(weekly, use_container_width=True, hide_index=True)
 
-        csv_bytes = view_df[UI_COLUMNS].to_csv(index=False).encode("utf-8")
-        st.download_button(
-            "Download filtered CSV",
-            data=csv_bytes,
-            file_name="worklog_filtered.csv",
-            mime="text/csv",
-        )
->>>>>>> 30ef248 (Fix weekly summary column KeyError)
+
+def render_view_edit_tab(df: pd.DataFrame, df_all: pd.DataFrame):
+    st.subheader("View & Edit")
+
+    if df.empty:
+        st.info("No records in this range.")
+        return
+
+    # Small dashboard inside View & Edit (kept, but clean)
+    st.markdown("### Dashboard")
+    status_counts = df["job_status"].fillna("Unknown").value_counts()
+    d1, d2, d3, d4 = st.columns(4)
+    d1.metric("Withdraw", int(status_counts.get("Withdraw", 0)))
+    d2.metric("Aborted", int(status_counts.get("Aborted", 0)))
+    d3.metric("Completed", int(status_counts.get("Completed", 0)))
+    d4.metric("Paid", int(status_counts.get("Paid", 0)))
+
+    report_df = dedup_for_reporting(df)
+    totals = compute_money_totals(report_df)
+
+    k1, k2, k3, k4, k5, k6 = st.columns(6)
+    k1.metric("Rows (filtered)", f"{len(df):,}")
+    k2.metric("Job amount", f"£{totals['total_job']:,.2f}")
+    k3.metric("Expenses", f"£{totals['total_exp']:,.2f}")
+    k4.metric("Waiting owed", f"£{totals['total_wait']:,.2f}")
+    k5.metric("Inspect & Collect pay", f"£{totals['ic_pay_total']:,.2f}")
+    k6.metric("Total owed", f"£{totals['total_earned']:,.2f}")
+
+    render_inspect_collect_section(report_df)
+    render_withdraw_aborted_section(df)
+    render_edit_section(df_all)
+    render_records_table(df)
+    render_weekly_summary(report_df)
+
+
+# =========================
+# Main app
+# =========================
+def main():
+    st.set_page_config(page_title=CFG.APP_TITLE, layout="wide")
+    st.title(CFG.APP_TITLE)
+
+    ensure_schema()
+    init_session_state()
+
+    render_sidebar_actions()
+
+    df_all = read_all()
+    df_filtered, _, _ = render_sidebar_filters(df_all)
+
+    tab0, tab1, tab2, tab3 = st.tabs(["Dashboard", "Add entry", "Upload Excel/CSV", "View & Edit"])
+    with tab0:
+        render_dashboard_tab(df_filtered)
+    with tab1:
+        render_add_entry_tab()
+    with tab2:
+        render_upload_tab()
+    with tab3:
+        render_view_edit_tab(df_filtered, df_all)
+
+
+if __name__ == "__main__":
+    main()
