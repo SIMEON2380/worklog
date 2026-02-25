@@ -2,6 +2,7 @@ import os
 import re
 import sqlite3
 import subprocess
+from pandas.io.formats.style import Styler
 from dataclasses import dataclass
 from datetime import date, timedelta
 from typing import Optional, Tuple, Any, Dict
@@ -937,7 +938,7 @@ def get_live_version() -> str:
 # =========================
 # Styling helpers
 # =========================
-def style_records(df_ui: pd.DataFrame) -> pd.io.formats.style.Styler:
+def style_records(df_ui: pd.DataFrame) -> Styler:
     def row_style(row: pd.Series):
         status = str(row.get("job status", "")).strip().lower()
         if status == "paid":
