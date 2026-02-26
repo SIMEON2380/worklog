@@ -5,10 +5,11 @@ import subprocess
 from pandas.io.formats.style import Styler
 from dataclasses import dataclass
 from datetime import date, timedelta
-from typing import Optional, Tuple, Any, Dict
+from typing import Optional, Tuple, Any, Dict, List
 
 import pandas as pd
 import streamlit as st
+import matplotlib.pyplot as plt
 
 
 # =========================
@@ -26,7 +27,10 @@ class Config:
 
     STATUS_OPTIONS = ["Start", "Completed", "Aborted", "Paid", "Pending", "Withdraw"]
     JOB_TYPE_OPTIONS = ["STRD Trade Plate", "Inspect and Collect", "Inspect and Collect 2"]
-    JOB_EXPENSE_OPTIONS = ["uber", "taxi", "train", "toll", "other"]
+
+    # Expenses - updated
+    # UI shows these, DB stores lower-case comma separated
+    JOB_EXPENSE_OPTIONS = ["No expenses", "uber", "taxi", "train", "toll", "fuel", "other"]
 
     # Inspect & Collect pay rate
     INSPECT_COLLECT_RATE: float = 8.00
@@ -94,9 +98,62 @@ def normalize_job_type(x: Any) -> str:
     return s if s in CFG.JOB_TYPE_OPTIONS else CFG.JOB_TYPE_OPTIONS[0]
 
 
-def normalize_expense_type(x: Any) -> str:
-    s = str(x or "").strip().lower()
-    return s if s in CFG.JOB_EXPENSE_OPTIONS else "other"
+def _expense_tokenize(raw: Any) -> List[str]:
+    """Split 'uber, fuel; train' into tokens, handle list input too."""
+    if raw is None:
+        return []
+    if isinstance(raw, (list, tuple, set)):
+        tokens = [str(x).strip() for x in raw]
+        return [t for t in tokens if t]
+    s = str(raw).strip()
+    if not s or s.lower() == "nan":
+        return []
+    # split on comma/semicolon/pipe
+    parts = re.split(r"[,\;\|]+", s)
+    return [p.strip() for p in parts if p.strip()]
+
+
+def normalize_expense_types(raw: Any) -> str:
+    """
+    DB stores comma-separated lower-case.
+    Backward compatible with old single values.
+    """
+    tokens = _expense_tokenize(raw)
+    opts_map = {o.lower().strip(): o for o in CFG.JOB_EXPENSE_OPTIONS}  # for UI mapping only
+    allowed = set([o.lower().strip() for o in CFG.JOB_EXPENSE_OPTIONS])
+
+    norm: List[str] = []
+    for t in tokens:
+        tl = t.lower().strip()
+        if tl in allowed:
+            norm.append(tl)
+        else:
+            # unknown -> other
+            norm.append("other")
+
+    # default
+    if not norm:
+        norm = ["no expenses"]
+
+    # if user picked "no expenses" plus other items, remove it
+    if "no expenses" in norm and len(set(norm)) > 1:
+        norm = [x for x in norm if x != "no expenses"]
+
+    # de-dupe while keeping order
+    seen = set()
+    out = []
+    for x in norm:
+        if x not in seen:
+            out.append(x)
+            seen.add(x)
+
+    return ", ".join(out)
+
+
+def expense_display(db_val: Any) -> str:
+    """For UI display: 'uber, fuel' -> 'uber, fuel' (keeps it readable)."""
+    s = normalize_expense_types(db_val)
+    return s
 
 
 def clean_job_number(val: Any) -> str:
@@ -123,6 +180,19 @@ def none_if_zero(x: Optional[float]) -> Optional[float]:
     except Exception:
         return None
     return None if f == 0.0 else f
+
+
+def coerce_money(x: Any) -> Optional[float]:
+    """Return float or None; keeps storage consistent."""
+    if x is None:
+        return None
+    try:
+        f = float(x)
+    except Exception:
+        return None
+    if f == 0.0:
+        return None
+    return float(f)
 
 
 # =========================
@@ -406,7 +476,10 @@ def read_all() -> pd.DataFrame:
     df["vehicle_reg"] = df["vehicle_reg"].fillna("").astype(str)
     df["collection_from"] = df["collection_from"].fillna("").astype(str)
     df["delivery_to"] = df["delivery_to"].fillna("").astype(str)
-    df["job_expenses"] = df["job_expenses"].fillna("").astype(str).apply(normalize_expense_type)
+
+    # Expenses now can be multi (stored as comma-separated)
+    df["job_expenses"] = df["job_expenses"].fillna("").astype(str).apply(normalize_expense_types)
+
     df["auth_code"] = df["auth_code"].fillna("").astype(str)
     df["comments"] = df["comments"].fillna("").astype(str)
 
@@ -439,6 +512,7 @@ def read_rows_by_job_number(job_number: str) -> pd.DataFrame:
     df["work_date"] = to_clean_date_series(df["work_date"])
     df["job_id"] = df["job_id"].apply(clean_job_number)
     df["vehicle_description"] = df["vehicle_description"].fillna("").astype(str).str.strip().str.upper()
+    df["job_expenses"] = df["job_expenses"].fillna("").astype(str).apply(normalize_expense_types)
     df["comments"] = df["comments"].fillna("").astype(str)
     return df
 
@@ -452,7 +526,7 @@ def insert_row(
     collection_from: str,
     delivery_to: str,
     job_amount: Optional[float],
-    job_expenses: str,
+    job_expenses: Any,  # list[str] or str
     expenses_amount: Optional[float],
     auth_code: str,
     job_status: str,
@@ -467,7 +541,9 @@ def insert_row(
     wd = work_date_val.isoformat()
     status = normalize_status(job_status)
     jt = normalize_job_type(job_type)
-    je = normalize_expense_type(job_expenses)
+
+    # NEW: multi-expenses
+    je = normalize_expense_types(job_expenses)
 
     vdesc = str(vehicle_description or "").strip().upper()  # ALWAYS CAPS
     vreg = str(vehicle_reg or "").strip()
@@ -476,8 +552,8 @@ def insert_row(
     auth = str(auth_code or "").strip()
     cmts = str(comments or "").strip()
 
-    amt = none_if_zero(job_amount)
-    exp_amt = none_if_zero(expenses_amount)
+    amt = coerce_money(job_amount)
+    exp_amt = coerce_money(expenses_amount)
 
     with get_conn() as conn:
         conn.execute(
@@ -527,7 +603,7 @@ def update_row_by_id(
     collection_from: str,
     delivery_to: str,
     job_amount: Optional[float],
-    job_expenses: str,
+    job_expenses: Any,  # list[str] or str
     expenses_amount: Optional[float],
     auth_code: str,
     job_status: str,
@@ -542,7 +618,7 @@ def update_row_by_id(
     wd = work_date_val.isoformat()
     status = normalize_status(job_status)
     jt = normalize_job_type(job_type)
-    je = normalize_expense_type(job_expenses)
+    je = normalize_expense_types(job_expenses)
 
     vdesc = str(vehicle_description or "").strip().upper()  # ALWAYS CAPS
     vreg = str(vehicle_reg or "").strip()
@@ -551,8 +627,8 @@ def update_row_by_id(
     auth = str(auth_code or "").strip()
     cmts = str(comments or "").strip()
 
-    amt = none_if_zero(job_amount)
-    exp_amt = none_if_zero(expenses_amount)
+    amt = coerce_money(job_amount)
+    exp_amt = coerce_money(expenses_amount)
 
     with get_conn() as conn:
         conn.execute(
@@ -655,8 +731,9 @@ def insert_many(df: pd.DataFrame) -> int:
 
     df2["amount"] = pd.to_numeric(df2[c_amt], errors="coerce") if c_amt else None
 
-    df2["job_expenses"] = df2[c_exp_type].fillna("other").astype(str).str.strip() if c_exp_type else "other"
-    df2["job_expenses"] = df2["job_expenses"].apply(normalize_expense_type)
+    # NEW: allow multi expense tokens in uploads too
+    raw_exp = df2[c_exp_type] if c_exp_type else ""
+    df2["job_expenses"] = raw_exp.fillna("").astype(str).apply(normalize_expense_types)
 
     df2["expenses_amount"] = pd.to_numeric(df2[c_exp_amt], errors="coerce") if c_exp_amt else None
     df2["auth_code"] = df2[c_auth].fillna("").astype(str).str.strip() if c_auth else ""
@@ -684,11 +761,8 @@ def insert_many(df: pd.DataFrame) -> int:
         return 0
 
     df2["work_date"] = df2["work_date"].apply(lambda d: d.isoformat() if isinstance(d, date) else None)
-
-    if "amount" in df2.columns:
-        df2["amount"] = df2["amount"].apply(lambda x: None if pd.isna(x) or float(x) == 0.0 else float(x))
-    if "expenses_amount" in df2.columns:
-        df2["expenses_amount"] = df2["expenses_amount"].apply(lambda x: None if pd.isna(x) or float(x) == 0.0 else float(x))
+    df2["amount"] = df2["amount"].apply(coerce_money) if "amount" in df2.columns else None
+    df2["expenses_amount"] = df2["expenses_amount"].apply(coerce_money) if "expenses_amount" in df2.columns else None
 
     rows = list(
         zip(
@@ -940,20 +1014,30 @@ def style_records(df_ui: pd.DataFrame) -> Styler:
     def row_style(row: pd.Series):
         status = str(row.get("job status", "")).strip().lower()
 
-        base_style = "color: #111; font-weight: 600;"  # darker + semi-bold
+        base_style = "color: #111; font-weight: 600;"
 
+        # easy-on-eye colour coding
         if status == "paid":
-            return [base_style + "background-color: #d1fae5;"] * len(row)  # soft green
+            return [base_style + "background-color: #d1fae5;"] * len(row)  # green
         if status == "withdraw":
-            return [base_style + "background-color: #fde68a;"] * len(row)  # soft amber
+            return [base_style + "background-color: #fde68a;"] * len(row)  # yellow
         if status == "aborted":
-            return [base_style + "background-color: #fecaca;"] * len(row)  # soft red
+            return [base_style + "background-color: #fecaca;"] * len(row)  # red
 
         return [base_style] * len(row)
 
     styled = df_ui.style.apply(row_style, axis=1)
 
+    # ensure 2dp formatting on money columns where present
+    fmt = {}
+    if "job amount" in df_ui.columns:
+        fmt["job amount"] = lambda x: "" if pd.isna(x) else f"{float(x):.2f}"
+    if "expenses Amount" in df_ui.columns:
+        fmt["expenses Amount"] = lambda x: "" if pd.isna(x) else f"{float(x):.2f}"
+    styled = styled.format(fmt)
+
     return styled
+
 
 # =========================
 # UI helpers
@@ -1091,26 +1175,15 @@ def render_dashboard_tab(df: pd.DataFrame):
 
     total_jobs = int(len(report_df))
     cars_logged = int(report_df["vehicle_reg"].fillna("").astype(str).str.strip().ne("").sum())
-    unique_cars = int(
-        report_df["vehicle_reg"]
-        .fillna("")
-        .astype(str)
-        .str.strip()
-        .replace("", pd.NA)
-        .dropna()
-        .nunique()
-    )
 
-    d1, d2, d3, d4, d5, d6 = st.columns(6)
+    d1, d2, d3, d4, d5 = st.columns(5)
     d1.metric("Total jobs (deduped)", f"{total_jobs:,}")
     d2.metric("Cars logged", f"{cars_logged:,}")
-    d3.metric("Unique cars", f"{unique_cars:,}")
-    d4.metric("Withdraw", int(status_counts.get("Withdraw", 0)))
-    d5.metric("Aborted", int(status_counts.get("Aborted", 0)))
-    d6.metric("Paid", int(status_counts.get("Paid", 0)))
+    d3.metric("Withdraw", int(status_counts.get("Withdraw", 0)))
+    d4.metric("Aborted", int(status_counts.get("Aborted", 0)))
+    d5.metric("Paid", int(status_counts.get("Paid", 0)))
 
     totals = compute_money_totals(report_df)
-
     k1, k2, k3, k4, k5 = st.columns(5)
     k1.metric("Job amount", f"£{totals['total_job']:,.2f}")
     k2.metric("Expenses", f"£{totals['total_exp']:,.2f}")
@@ -1118,22 +1191,81 @@ def render_dashboard_tab(df: pd.DataFrame):
     k4.metric("Inspect & Collect pay", f"£{totals['ic_pay_total']:,.2f}")
     k5.metric("Total owed", f"£{totals['total_earned']:,.2f}")
 
+    st.divider()
 
-def clear_add_entry_form():
-    st.session_state["add_date"] = date.today()
-    st.session_state["add_job_number"] = ""
-    st.session_state["add_job_type"] = CFG.JOB_TYPE_OPTIONS[0]
-    st.session_state["add_job_status"] = "Pending"
-    st.session_state["add_vdesc"] = ""
-    st.session_state["add_vreg"] = ""
-    st.session_state["add_from"] = ""
-    st.session_state["add_to"] = ""
-    st.session_state["add_amount"] = 0.0
-    st.session_state["add_exp_type"] = CFG.JOB_EXPENSE_OPTIONS[0]
-    st.session_state["add_exp_amt"] = 0.0
-    st.session_state["add_auth"] = ""
-    st.session_state["add_waiting"] = ""
-    st.session_state["add_comments"] = ""
+    # Pie chart + cars report
+    left, right = st.columns([1, 2])
+
+    with left:
+        st.markdown("### Job status breakdown")
+        counts = df["job_status"].fillna("Unknown").value_counts()
+        fig, ax = plt.subplots()
+        ax.pie(counts.values, labels=counts.index.tolist(), autopct="%1.0f%%")
+        ax.set_aspect("equal")
+        st.pyplot(fig, clear_figure=True)
+
+    with right:
+        st.markdown("### Cars driven (vehicle description + reg)")
+        cars = report_df.copy()
+        cars["vehicle_description"] = cars["vehicle_description"].fillna("").astype(str).str.strip().str.upper()
+        cars["vehicle_reg"] = cars["vehicle_reg"].fillna("").astype(str).str.strip()
+
+        cars = cars[(cars["vehicle_description"] != "") | (cars["vehicle_reg"] != "")]
+        if cars.empty:
+            st.caption("No vehicle data in current filters.")
+        else:
+            cars["amount_num"] = pd.to_numeric(cars["amount"], errors="coerce").fillna(0.0)
+            cars["expenses_num"] = pd.to_numeric(cars["expenses_amount"], errors="coerce").fillna(0.0)
+
+            cars_summary = (
+                cars.groupby(["vehicle_description", "vehicle_reg"], as_index=False)
+                .agg(
+                    trips=("job_id", "count"),
+                    last_driven=("work_date", "max"),
+                    total_job_amount=("amount_num", "sum"),
+                    total_expenses=("expenses_num", "sum"),
+                )
+                .sort_values(["trips", "last_driven"], ascending=[False, False])
+            )
+
+            cars_summary["total_job_amount"] = cars_summary["total_job_amount"].apply(lambda x: f"£{x:,.2f}")
+            cars_summary["total_expenses"] = cars_summary["total_expenses"].apply(lambda x: f"£{x:,.2f}")
+
+            st.dataframe(cars_summary, use_container_width=True, hide_index=True)
+
+            csv_bytes = cars_summary.to_csv(index=False).encode("utf-8")
+            st.download_button(
+                "Download cars driven CSV",
+                data=csv_bytes,
+                file_name="worklog_cars_driven.csv",
+                mime="text/csv",
+            )
+
+
+def clear_add_entry_form_option2():
+    """
+    OPTION 2: delete widget keys so Streamlit recreates them cleanly on rerun.
+    This avoids: st.session_state.<key> cannot be modified after widget instantiated.
+    """
+    keys = [
+        "add_date",
+        "add_job_number",
+        "add_job_type",
+        "add_job_status",
+        "add_vdesc",
+        "add_vreg",
+        "add_from",
+        "add_to",
+        "add_amount",
+        "add_exp_types",
+        "add_exp_amt",
+        "add_auth",
+        "add_waiting",
+        "add_comments",
+    ]
+    for k in keys:
+        if k in st.session_state:
+            del st.session_state[k]
 
 
 def render_add_entry_tab():
@@ -1144,7 +1276,12 @@ def render_add_entry_tab():
         work_date_val = st.date_input("Date", value=date.today(), key="add_date")
         job_number = st.text_input("job number (required)", key="add_job_number")
         job_type = st.selectbox("job type", CFG.JOB_TYPE_OPTIONS, index=0, key="add_job_type")
-        job_status = st.selectbox("job status", CFG.STATUS_OPTIONS, index=CFG.STATUS_OPTIONS.index("Pending"), key="add_job_status")
+        job_status = st.selectbox(
+            "job status",
+            CFG.STATUS_OPTIONS,
+            index=CFG.STATUS_OPTIONS.index("Pending"),
+            key="add_job_status",
+        )
     with c2:
         vehicle_description = st.text_input("vehcile description", key="add_vdesc")
         vehicle_reg = st.text_input("vehicle Reg", key="add_vreg")
@@ -1152,18 +1289,34 @@ def render_add_entry_tab():
         collection_from = st.text_input("collection from", key="add_from")
         delivery_to = st.text_input("delivery to", key="add_to")
     with c4:
-        job_amount = st.number_input("job amount", step=0.5, value=0.0, key="add_amount")
-        job_expenses = st.selectbox("Job Expenses", CFG.JOB_EXPENSE_OPTIONS, index=0, key="add_exp_type")
-        expenses_amount = st.number_input("expenses Amount", step=0.5, value=0.0, key="add_exp_amt")
+        # 2dp fix
+        job_amount = st.number_input("job amount", step=0.5, value=0.0, format="%.2f", key="add_amount")
+
+        # MULTI expenses + default "No expenses"
+        exp_default = ["No expenses"]
+        job_expenses = st.multiselect(
+            "Job Expenses",
+            options=CFG.JOB_EXPENSE_OPTIONS,
+            default=exp_default,
+            key="add_exp_types",
+        )
+
+        expenses_amount = st.number_input("expenses Amount", step=0.5, value=0.0, format="%.2f", key="add_exp_amt")
         auth_code = st.text_input("Auth code", key="add_auth")
-        waiting_time_raw = st.text_input("waiting time (e.g. 10-12 or 10:30-12:15)", value="", key="add_waiting")
+        waiting_time_raw = st.text_input(
+            "waiting time (e.g. 10-12 or 10:30-12:15)",
+            value="",
+            key="add_waiting",
+        )
 
         w_hours, w_norm = parse_waiting_time(waiting_time_raw)
         if waiting_time_raw.strip():
             if w_hours is None:
                 st.error("Waiting time format invalid. Use like 10-12 or 10:30-12:15.")
             else:
-                st.write(f"Waiting: **{w_norm}** | Hours: **{w_hours:.2f}** | Owed: **£{(w_hours*CFG.WAITING_RATE):.2f}**")
+                st.write(
+                    f"Waiting: **{w_norm}** | Hours: **{w_hours:.2f}** | Owed: **£{(w_hours*CFG.WAITING_RATE):.2f}**"
+                )
 
     comments = st.text_area("comments", key="add_comments")
 
@@ -1177,6 +1330,13 @@ def render_add_entry_tab():
             st.error("Fix waiting time format before saving.")
             return
 
+        # enforce default/no-expenses behaviour safely (no session_state mutation needed)
+        exp_list = job_expenses or ["No expenses"]
+        if "No expenses" in exp_list and len(exp_list) > 1:
+            exp_list = [x for x in exp_list if x != "No expenses"]
+        if not exp_list:
+            exp_list = ["No expenses"]
+
         try:
             insert_row(
                 work_date_val=work_date_val,
@@ -1187,7 +1347,7 @@ def render_add_entry_tab():
                 collection_from=collection_from,
                 delivery_to=delivery_to,
                 job_amount=float(job_amount) if job_amount is not None else None,
-                job_expenses=job_expenses,
+                job_expenses=exp_list,  # multi
                 expenses_amount=float(expenses_amount) if expenses_amount is not None else None,
                 auth_code=auth_code,
                 job_status=job_status,
@@ -1195,7 +1355,9 @@ def render_add_entry_tab():
                 comments=comments,
             )
             st.success("Saved.")
-            clear_add_entry_form()
+
+            # FIX OPTION 2: delete keys then rerun
+            clear_add_entry_form_option2()
             st.rerun()
         except Exception as e:
             st.error(f"Save failed: {e}")
@@ -1214,7 +1376,7 @@ def render_upload_tab():
 
     try:
         up_df = pd.read_csv(up) if up.name.lower().endswith(".csv") else pd.read_excel(up)
-        
+
         st.dataframe(up_df.head(30), use_container_width=True)
         if st.button("Import into database"):
             n = insert_many(up_df)
@@ -1361,7 +1523,18 @@ def render_edit_section(df_all: pd.DataFrame):
     cur_from = str(picked_row.get("collection_from") or "").strip()
     cur_to = str(picked_row.get("delivery_to") or "").strip()
     cur_job_amount = float(picked_row.get("amount") or 0.0)
-    cur_job_exp = normalize_expense_type(picked_row.get("job_expenses"))
+
+    # multi-expenses current value
+    cur_job_exp = normalize_expense_types(picked_row.get("job_expenses"))
+    cur_exp_list = [x.strip() for x in cur_job_exp.split(",") if x.strip()] if cur_job_exp else ["no expenses"]
+    cur_exp_list_ui = []
+    for x in cur_exp_list:
+        # match UI casing where possible
+        if x.lower() == "no expenses":
+            cur_exp_list_ui.append("No expenses")
+        else:
+            cur_exp_list_ui.append(x.lower())
+
     cur_exp_amt = float(picked_row.get("expenses_amount") or 0.0)
     cur_auth = str(picked_row.get("auth_code") or "").strip()
     cur_status = normalize_status(picked_row.get("job_status"))
@@ -1377,8 +1550,18 @@ def render_edit_section(df_all: pd.DataFrame):
         with c1:
             new_date = st.date_input("Date", value=cur_date, key=f"e_date_{row_id}_{nonce}")
             new_job_number = st.text_input("job number (required)", value=cur_job_number, key=f"e_job_{row_id}_{nonce}")
-            new_job_type = st.selectbox("job type", CFG.JOB_TYPE_OPTIONS, index=CFG.JOB_TYPE_OPTIONS.index(cur_job_type), key=f"e_type_{row_id}_{nonce}")
-            new_status = st.selectbox("job status", CFG.STATUS_OPTIONS, index=CFG.STATUS_OPTIONS.index(cur_status), key=f"e_status_{row_id}_{nonce}")
+            new_job_type = st.selectbox(
+                "job type",
+                CFG.JOB_TYPE_OPTIONS,
+                index=CFG.JOB_TYPE_OPTIONS.index(cur_job_type),
+                key=f"e_type_{row_id}_{nonce}",
+            )
+            new_status = st.selectbox(
+                "job status",
+                CFG.STATUS_OPTIONS,
+                index=CFG.STATUS_OPTIONS.index(cur_status),
+                key=f"e_status_{row_id}_{nonce}",
+            )
 
         with c2:
             new_vdesc = st.text_input("vehcile description", value=cur_vdesc, key=f"e_vdesc_{row_id}_{nonce}")
@@ -1389,9 +1572,29 @@ def render_edit_section(df_all: pd.DataFrame):
             new_to = st.text_input("delivery to", value=cur_to, key=f"e_to_{row_id}_{nonce}")
 
         with c4:
-            new_job_amount = st.number_input("job amount", step=0.5, value=float(cur_job_amount), key=f"e_amt_{row_id}_{nonce}")
-            new_job_expenses = st.selectbox("Job Expenses", CFG.JOB_EXPENSE_OPTIONS, index=CFG.JOB_EXPENSE_OPTIONS.index(cur_job_exp), key=f"e_expt_{row_id}_{nonce}")
-            new_exp_amt = st.number_input("expenses Amount", step=0.5, value=float(cur_exp_amt), key=f"e_expa_{row_id}_{nonce}")
+            new_job_amount = st.number_input(
+                "job amount",
+                step=0.5,
+                value=float(cur_job_amount),
+                format="%.2f",
+                key=f"e_amt_{row_id}_{nonce}",
+            )
+
+            # multi-expenses editor
+            new_job_expenses = st.multiselect(
+                "Job Expenses",
+                CFG.JOB_EXPENSE_OPTIONS,
+                default=(cur_exp_list_ui if cur_exp_list_ui else ["No expenses"]),
+                key=f"e_expt_{row_id}_{nonce}",
+            )
+
+            new_exp_amt = st.number_input(
+                "expenses Amount",
+                step=0.5,
+                value=float(cur_exp_amt),
+                format="%.2f",
+                key=f"e_expa_{row_id}_{nonce}",
+            )
             new_auth = st.text_input("Auth code", value=cur_auth, key=f"e_auth_{row_id}_{nonce}")
 
             new_waiting_raw = st.text_input("waiting time", value=cur_waiting, key=f"e_wait_{row_id}_{nonce}")
@@ -1418,6 +1621,12 @@ def render_edit_section(df_all: pd.DataFrame):
             elif new_waiting_raw.strip() and wh is None:
                 st.error("Fix waiting time format before saving.")
             else:
+                exp_list = new_job_expenses or ["No expenses"]
+                if "No expenses" in exp_list and len(exp_list) > 1:
+                    exp_list = [x for x in exp_list if x != "No expenses"]
+                if not exp_list:
+                    exp_list = ["No expenses"]
+
                 update_row_by_id(
                     row_id=row_id,
                     work_date_val=new_date,
@@ -1428,7 +1637,7 @@ def render_edit_section(df_all: pd.DataFrame):
                     collection_from=new_from,
                     delivery_to=new_to,
                     job_amount=float(new_job_amount),
-                    job_expenses=new_job_expenses,
+                    job_expenses=exp_list,
                     expenses_amount=float(new_exp_amt),
                     auth_code=new_auth,
                     job_status=new_status,
@@ -1565,7 +1774,6 @@ def render_view_edit_tab(df: pd.DataFrame, df_all: pd.DataFrame):
         st.info("No records in this range.")
         return
 
-    # Small dashboard inside View & Edit (kept, but clean)
     st.markdown("### Dashboard")
     status_counts = df["job_status"].fillna("Unknown").value_counts()
     d1, d2, d3, d4 = st.columns(4)
