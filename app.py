@@ -10,7 +10,26 @@ from typing import Optional, Tuple, Any, Dict, List
 import pandas as pd
 import streamlit as st
 import matplotlib.pyplot as plt
+import streamlit as st
 
+def require_admin():
+    if "admin_authenticated" not in st.session_state:
+        st.session_state.admin_authenticated = False
+
+    if not st.session_state.admin_authenticated:
+        st.subheader("Admin Login")
+
+        password = st.text_input("Enter admin password", type="password")
+
+        if st.button("Login"):
+            if password == st.secrets["ADMIN_PASSWORD"]:
+                st.session_state.admin_authenticated = True
+                st.success("Authenticated")
+                st.rerun()
+            else:
+                st.error("Invalid password")
+
+        st.stop()
 
 # =========================
 # Config
