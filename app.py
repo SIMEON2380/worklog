@@ -36,6 +36,7 @@ def require_admin():
 # =========================
 @dataclass(frozen=True)
 class Config:
+    
     APP_TITLE: str = "Worklog"
 
     # systemd: Environment=WORKLOG_DB_DIR=/var/lib/worklog
@@ -1822,9 +1823,18 @@ def render_view_edit_tab(df: pd.DataFrame, df_all: pd.DataFrame):
 # =========================
 # Main app
 # =========================
-def main():
+def main() -> None:
     st.set_page_config(page_title=CFG.APP_TITLE, layout="wide")
     st.title(CFG.APP_TITLE)
+
+    st.sidebar.divider()
+    admin_mode = st.sidebar.checkbox("Admin mode")
+
+    if not admin_mode:
+        st.info("Enable **Admin mode** in the sidebar to access admin features.")
+        return
+
+    require_admin()
 
     ensure_schema()
     init_session_state()
@@ -1834,14 +1844,20 @@ def main():
     df_all = read_all()
     df_filtered, _, _ = render_sidebar_filters(df_all)
 
-    tab0, tab1, tab2, tab3 = st.tabs(["Dashboard", "Add entry", "Upload Excel/CSV", "View & Edit"])
-    with tab0:
+    tab_dashboard, tab_add, tab_upload, tab_view = st.tabs(
+        ["Dashboard", "Add entry", "Upload Excel/CSV", "View & Edit"]
+    )
+
+    with tab_dashboard:
         render_dashboard_tab(df_filtered)
-    with tab1:
+
+    with tab_add:
         render_add_entry_tab()
-    with tab2:
+
+    with tab_upload:
         render_upload_tab()
-    with tab3:
+
+    with tab_view:
         render_view_edit_tab(df_filtered, df_all)
 
 
