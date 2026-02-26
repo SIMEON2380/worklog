@@ -7,28 +7,17 @@ on:
 jobs:
   deploy:
     runs-on: self-hosted
-
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Install dependencies (only if requirements.txt exists)
+      - name: Deploy latest main to live folder
         shell: bash
         run: |
-          if [ -f "requirements.txt" ]; then
-            if [ -d "venv" ]; then
-              source venv/bin/activate
-              pip install -r requirements.txt
-              deactivate
-            else
-              echo "venv folder not found, skipping pip install"
-            fi
-          else
-            echo "No requirements.txt found, skipping pip install"
-          fi
+          set -euxo pipefail
+          cd /home/simeon/worklog
+          git fetch origin main
+          git reset --hard origin/main
+
       - name: Restart worklog service
+        shell: bash
         run: |
           sudo -n /usr/bin/systemctl restart worklog.service
           sudo -n /usr/bin/systemctl status worklog.service --no-pager
-  # deploy test 
-  #deploy test       
