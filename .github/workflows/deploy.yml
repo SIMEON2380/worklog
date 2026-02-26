@@ -26,8 +26,7 @@ jobs:
           else
             echo "No requirements.txt found, skipping pip install"
           fi
-
       - name: Restart worklog service
         run: |
-          sudo systemctl restart worklog.service
-          sudo systemctl status worklog.service --no-pager
+          sudo /usr/bin/systemctl restart worklog.service
+          sudo /usr/bin/systemctl status worklog.service --no-pager
