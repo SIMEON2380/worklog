@@ -29,5 +29,5 @@ jobs:
 
       - name: Restart worklog service
         run: |
-          sudo systemctl restart worklog
-          sudo systemctl status worklog --no-pager
+          sudo systemctl restart worklog.service
+          sudo systemctl status worklog.service --no-pager
