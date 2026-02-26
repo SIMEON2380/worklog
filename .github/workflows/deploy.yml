@@ -1,0 +1,33 @@
+name: Deploy Worklog
+
+on:
+  push:
+    branches: ["main"]
+
+jobs:
+  deploy:
+    runs-on: self-hosted
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install dependencies (only if requirements.txt exists)
+        shell: bash
+        run: |
+          if [ -f "requirements.txt" ]; then
+            if [ -d "venv" ]; then
+              source venv/bin/activate
+              pip install -r requirements.txt
+              deactivate
+            else
+              echo "venv folder not found, skipping pip install"
+            fi
+          else
+            echo "No requirements.txt found, skipping pip install"
+          fi
+
+      - name: Restart worklog service
+        run: |
+          sudo systemctl restart worklog
+          sudo systemctl status worklog --no-pager
