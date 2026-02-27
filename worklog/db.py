@@ -1,364 +1,228 @@
-# worklog/db.py
 import os
 import sqlite3
-from typing import Any, Dict, Optional, Tuple, List
+from contextlib import contextmanager
+from datetime import datetime
+from typing import Dict, Any, Iterable, List, Optional, Tuple
 
 import pandas as pd
 
-TABLE_NAME = "work_logs"
+from .config import Config
 
 
-def get_db_path() -> str:
-    db_dir = os.environ.get("WORKLOG_DB_DIR", "/var/lib/worklog")
-    os.makedirs(db_dir, exist_ok=True)
-    return os.path.join(db_dir, "worklog.db")
+def _db_path(cfg: Config) -> str:
+    os.makedirs(cfg.DB_DIR, exist_ok=True)
+    return os.path.join(cfg.DB_DIR, cfg.DB_FILE)
 
 
-def get_conn() -> sqlite3.Connection:
-    conn = sqlite3.connect(get_db_path())
+@contextmanager
+def connect(cfg: Config):
+    conn = sqlite3.connect(_db_path(cfg), check_same_thread=False)
     conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA foreign_keys = ON;")
-    conn.execute("PRAGMA journal_mode = WAL;")
-    return conn
-
-
-def _existing_columns(conn: sqlite3.Connection) -> set[str]:
-    rows = conn.execute(f"PRAGMA table_info({TABLE_NAME});").fetchall()
-    return {r["name"] for r in rows}
-
-
-def init_db() -> None:
-    """
-    Your table already exists. We ONLY do safe schema upgrades here:
-    add columns your new UI expects (postcode/customer_name/site_address),
-    and optionally updated_at.
-    """
-    conn = get_conn()
     try:
-        cols = _existing_columns(conn)
-
-        # Add columns the UI expects but your old schema doesn't have.
-        # These are safe ADD COLUMN operations (no data loss).
-        upgrades: List[Tuple[str, str]] = [
-            ("postcode", "TEXT"),
-            ("customer_name", "TEXT"),
-            ("site_address", "TEXT"),
-            ("updated_at", "TEXT"),
-        ]
-
-        for col, ddl in upgrades:
-            if col not in cols:
-                conn.execute(f"ALTER TABLE {TABLE_NAME} ADD COLUMN {col} {ddl};")
-
+        yield conn
         conn.commit()
     finally:
         conn.close()
 
 
-# --- Internal helpers ---------------------------------------------------------
-
-def _latest_row_id_for_job(conn: sqlite3.Connection, job_id: str) -> Optional[int]:
-    row = conn.execute(
-        f"""
-        SELECT id
-        FROM {TABLE_NAME}
-        WHERE job_id = ?
-        ORDER BY
-          CASE WHEN work_date IS NULL OR work_date = '' THEN 0 ELSE 1 END DESC,
-          work_date DESC,
-          id DESC
-        LIMIT 1;
-        """,
-        (job_id,),
-    ).fetchone()
-    return int(row["id"]) if row else None
+def _table_columns(conn: sqlite3.Connection, table: str) -> Dict[str, str]:
+    cur = conn.execute(f"PRAGMA table_info({table})")
+    cols = {}
+    for r in cur.fetchall():
+        cols[r["name"]] = r["type"]
+    return cols
 
 
-def _to_ui_row(db_row: sqlite3.Row) -> Dict[str, Any]:
+def init_db(cfg: Config) -> None:
     """
-    Convert DB row (old schema) to keys expected by app.py.
+    Creates tables if missing and adds missing columns safely.
+    This is migration-safe: it never drops existing data.
     """
-    return {
-        "job_number": db_row["job_id"],
-        "job_type": db_row["category"],
-        "status": db_row["job_status"],
-        "vehicle_description": db_row["vehicle_description"],
-        "postcode": db_row["postcode"],
-        "expense_type": db_row["job_expenses"],
-        "customer_name": db_row["customer_name"],
-        "site_address": db_row["site_address"],
-        "notes": db_row["comments"],
-        # keep some useful originals if you ever want to show them
-        "id": db_row["id"],
-        "work_date": db_row["work_date"],
-        "hours": db_row["hours"],
-        "amount": db_row["amount"],
-        "created_at": db_row["created_at"],
-        "updated_at": db_row["updated_at"],
+    with connect(cfg) as conn:
+        # Users table
+        conn.execute(
+            f"""
+            CREATE TABLE IF NOT EXISTS {cfg.USERS_TABLE} (
+                username TEXT PRIMARY KEY,
+                password_hash TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+
+        # Work logs table (safe default schema)
+        conn.execute(
+            f"""
+            CREATE TABLE IF NOT EXISTS {cfg.TABLE_NAME} (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                job_date TEXT NOT NULL,
+                job_type TEXT NOT NULL,
+                status TEXT NOT NULL,
+                reference TEXT DEFAULT '',
+                start_time TEXT DEFAULT '',
+                end_time TEXT DEFAULT '',
+                waiting_hours REAL DEFAULT 0,
+                pay REAL DEFAULT 0,
+                expense_type TEXT DEFAULT '',
+                expense_amount REAL DEFAULT 0,
+                notes TEXT DEFAULT '',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+
+        # Add missing columns safely if older schema exists
+        existing = _table_columns(conn, cfg.TABLE_NAME)
+        desired = {
+            "id": "INTEGER",
+            "job_date": "TEXT",
+            "job_type": "TEXT",
+            "status": "TEXT",
+            "reference": "TEXT",
+            "start_time": "TEXT",
+            "end_time": "TEXT",
+            "waiting_hours": "REAL",
+            "pay": "REAL",
+            "expense_type": "TEXT",
+            "expense_amount": "REAL",
+            "notes": "TEXT",
+            "created_at": "TEXT",
+            "updated_at": "TEXT",
+        }
+
+        for col, col_type in desired.items():
+            if col not in existing:
+                # SQLite allows ADD COLUMN; no DROP.
+                conn.execute(f"ALTER TABLE {cfg.TABLE_NAME} ADD COLUMN {col} {col_type}")
+        # Ensure updated_at/created_at exist for older rows
+        now = datetime.utcnow().isoformat(timespec="seconds")
+        if "created_at" in desired:
+            conn.execute(
+                f"UPDATE {cfg.TABLE_NAME} SET created_at = COALESCE(created_at, ?) WHERE created_at IS NULL OR created_at = ''",
+                (now,),
+            )
+        if "updated_at" in desired:
+            conn.execute(
+                f"UPDATE {cfg.TABLE_NAME} SET updated_at = COALESCE(updated_at, ?) WHERE updated_at IS NULL OR updated_at = ''",
+                (now,),
+            )
+
+
+def fetch_jobs(
+    cfg: Config,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    status: Optional[str] = None,
+    job_type: Optional[str] = None,
+    search: Optional[str] = None,
+) -> pd.DataFrame:
+    where = []
+    params: List[Any] = []
+
+    if date_from:
+        where.append("job_date >= ?")
+        params.append(date_from)
+    if date_to:
+        where.append("job_date <= ?")
+        params.append(date_to)
+    if status and status != "All":
+        where.append("status = ?")
+        params.append(status)
+    if job_type and job_type != "All":
+        where.append("job_type = ?")
+        params.append(job_type)
+    if search:
+        where.append("(notes LIKE ? OR reference LIKE ?)")
+        params.extend([f"%{search}%", f"%{search}%"])
+
+    where_sql = ("WHERE " + " AND ".join(where)) if where else ""
+    sql = f"""
+        SELECT
+            id, job_date, job_type, status, reference, start_time, end_time,
+            waiting_hours, pay, expense_type, expense_amount, notes,
+            created_at, updated_at
+        FROM {cfg.TABLE_NAME}
+        {where_sql}
+        ORDER BY job_date DESC, id DESC
+    """
+
+    with connect(cfg) as conn:
+        df = pd.read_sql_query(sql, conn, params=params)
+
+    # Friendly types
+    if not df.empty:
+        df["waiting_hours"] = pd.to_numeric(df["waiting_hours"], errors="coerce").fillna(0.0)
+        df["pay"] = pd.to_numeric(df["pay"], errors="coerce").fillna(0.0)
+        df["expense_amount"] = pd.to_numeric(df["expense_amount"], errors="coerce").fillna(0.0)
+    return df
+
+
+def update_job_status(cfg: Config, job_id: int, new_status: str) -> None:
+    from datetime import datetime
+
+    now = datetime.utcnow().isoformat(timespec="seconds")
+    with connect(cfg) as conn:
+        conn.execute(
+            f"UPDATE {cfg.TABLE_NAME} SET status = ?, updated_at = ? WHERE id = ?",
+            (new_status, now, int(job_id)),
+        )
+
+
+def update_job_fields(cfg: Config, job_id: int, fields: Dict[str, Any]) -> None:
+    """
+    Updates editable fields safely. Only updates known columns.
+    """
+    from datetime import datetime
+
+    allowed = {
+        "job_date", "job_type", "status", "reference",
+        "start_time", "end_time", "waiting_hours", "pay",
+        "expense_type", "expense_amount", "notes",
     }
 
+    clean = {k: v for k, v in fields.items() if k in allowed}
+    if not clean:
+        return
 
-# --- Public API used by app.py -----------------------------------------------
+    clean["updated_at"] = datetime.utcnow().isoformat(timespec="seconds")
 
-def list_jobs(search: str = "", limit: int = 500) -> pd.DataFrame:
-    """
-    The old table can have multiple rows per job_id (because unique index is work_date + job_id).
-    For the UI, we show ONE row per job_id: the latest one.
-    """
-    conn = get_conn()
-    search = (search or "").strip()
+    sets = ", ".join([f"{k} = ?" for k in clean.keys()])
+    params = list(clean.values()) + [int(job_id)]
 
-    try:
-        # Use a window function to pick the latest row per job_id.
-        # (SQLite supports this in modern versions.)
-        base = f"""
-        WITH ranked AS (
-          SELECT
-            *,
-            ROW_NUMBER() OVER (
-              PARTITION BY job_id
-              ORDER BY
-                CASE WHEN work_date IS NULL OR work_date = '' THEN 0 ELSE 1 END DESC,
-                work_date DESC,
-                id DESC
-            ) AS rn
-          FROM {TABLE_NAME}
+    with connect(cfg) as conn:
+        conn.execute(
+            f"UPDATE {cfg.TABLE_NAME} SET {sets} WHERE id = ?",
+            params,
         )
-        SELECT
-          id,
-          work_date,
-          hours,
-          amount,
-          created_at,
-          updated_at,
-
-          job_id            AS job_number,
-          category          AS job_type,
-          job_status        AS status,
-          vehicle_description,
-          postcode,
-          job_expenses      AS expense_type,
-          customer_name,
-          site_address,
-          comments          AS notes
-
-        FROM ranked
-        WHERE rn = 1
-        """
-
-        params: Tuple[Any, ...]
-        if search:
-            like = f"%{search}%"
-            sql = base + """
-              AND (
-                job_id LIKE ?
-                OR COALESCE(postcode,'') LIKE ?
-                OR COALESCE(vehicle_description,'') LIKE ?
-                OR COALESCE(customer_name,'') LIKE ?
-              )
-              ORDER BY job_number DESC
-              LIMIT ?
-            """
-            params = (like, like, like, like, int(limit))
-        else:
-            sql = base + """
-              ORDER BY job_number DESC
-              LIMIT ?
-            """
-            params = (int(limit),)
-
-        df = pd.read_sql_query(sql, conn, params=params)
-        return df
-    finally:
-        conn.close()
 
 
-def get_job_by_number(job_number: str) -> Optional[Dict[str, Any]]:
-    """
-    In your DB: job_number == job_id.
-    Returns the latest row for that job_id mapped to UI field names.
-    """
-    conn = get_conn()
-    try:
-        row = conn.execute(
-            f"""
-            SELECT *
-            FROM {TABLE_NAME}
-            WHERE job_id = ?
-            ORDER BY
-              CASE WHEN work_date IS NULL OR work_date = '' THEN 0 ELSE 1 END DESC,
-              work_date DESC,
-              id DESC
-            LIMIT 1;
-            """,
-            (job_number,),
-        ).fetchone()
+def insert_job(cfg: Config, row: Dict[str, Any]) -> None:
+    from datetime import datetime
 
-        return _to_ui_row(row) if row else None
-    finally:
-        conn.close()
+    now = datetime.utcnow().isoformat(timespec="seconds")
 
+    data = {
+        "job_date": row.get("job_date", ""),
+        "job_type": row.get("job_type", ""),
+        "status": row.get("status", "Start"),
+        "reference": row.get("reference", ""),
+        "start_time": row.get("start_time", ""),
+        "end_time": row.get("end_time", ""),
+        "waiting_hours": float(row.get("waiting_hours") or 0),
+        "pay": float(row.get("pay") or 0),
+        "expense_type": row.get("expense_type", ""),
+        "expense_amount": float(row.get("expense_amount") or 0),
+        "notes": row.get("notes", ""),
+        "created_at": now,
+        "updated_at": now,
+    }
 
-def upsert_job(record: Dict[str, Any]) -> None:
-    """
-    Your UI doesn't supply work_date, but your old schema is date-based.
-    So we treat "upsert" as:
-      - update latest row for that job_id if it exists
-      - else insert a new row with work_date = today and blank numeric fields
-    """
-    job_id = (record or {}).get("job_number")
-    if not job_id:
-        raise ValueError("record must include job_number")
-
-    conn = get_conn()
-    try:
-        existing_id = _latest_row_id_for_job(conn, job_id)
-
-        if existing_id is not None:
-            conn.execute(
-                f"""
-                UPDATE {TABLE_NAME}
-                SET
-                  category = ?,
-                  job_status = ?,
-                  vehicle_description = ?,
-                  postcode = ?,
-                  job_expenses = ?,
-                  customer_name = ?,
-                  site_address = ?,
-                  comments = ?,
-                  updated_at = datetime('now')
-                WHERE id = ?;
-                """,
-                (
-                    record.get("job_type"),
-                    record.get("status"),
-                    record.get("vehicle_description"),
-                    record.get("postcode"),
-                    record.get("expense_type"),
-                    record.get("customer_name"),
-                    record.get("site_address"),
-                    record.get("notes"),
-                    existing_id,
-                ),
-            )
-        else:
-            conn.execute(
-                f"""
-                INSERT INTO {TABLE_NAME} (
-                  work_date, description, hours, amount,
-                  job_id, category,
-                  job_status,
-                  vehicle_description, postcode,
-                  job_expenses,
-                  customer_name, site_address,
-                  comments,
-                  created_at, updated_at
-                )
-                VALUES (
-                  date('now'), '', 0, 0,
-                  ?, ?,
-                  ?,
-                  ?, ?,
-                  ?,
-                  ?, ?,
-                  ?,
-                  datetime('now'), datetime('now')
-                );
-                """,
-                (
-                    job_id,
-                    record.get("job_type"),
-                    record.get("status"),
-                    record.get("vehicle_description"),
-                    record.get("postcode"),
-                    record.get("expense_type"),
-                    record.get("customer_name"),
-                    record.get("site_address"),
-                    record.get("notes"),
-                ),
-            )
-
-        conn.commit()
-    finally:
-        conn.close()
-
-
-def update_job(
-    *,
-    job_number: str,
-    job_type: str = "",
-    status: str = "",
-    vehicle_description: str = "",
-    postcode: str = "",
-    expense_type: str = "",
-    customer_name: str = "",
-    site_address: str = "",
-    notes: str = "",
-) -> bool:
-    """
-    Updates the latest row for that job_id.
-    Returns True if updated, False if job doesn't exist.
-    """
-    conn = get_conn()
-    try:
-        row_id = _latest_row_id_for_job(conn, job_number)
-        if row_id is None:
-            return False
-
-        cur = conn.execute(
-            f"""
-            UPDATE {TABLE_NAME}
-            SET
-              category = ?,
-              job_status = ?,
-              vehicle_description = ?,
-              postcode = ?,
-              job_expenses = ?,
-              customer_name = ?,
-              site_address = ?,
-              comments = ?,
-              updated_at = datetime('now')
-            WHERE id = ?;
-            """,
-            (
-                job_type,
-                status,
-                vehicle_description,
-                postcode,
-                expense_type,
-                customer_name,
-                site_address,
-                notes,
-                row_id,
-            ),
+    cols = ", ".join(data.keys())
+    qs = ", ".join(["?"] * len(data))
+    with connect(cfg) as conn:
+        conn.execute(
+            f"INSERT INTO {cfg.TABLE_NAME} ({cols}) VALUES ({qs})",
+            list(data.values()),
         )
-        conn.commit()
-        return cur.rowcount > 0
-    finally:
-        conn.close()
-
-
-def delete_job(job_number: str) -> bool:
-    """
-    Deletes ALL rows for that job_id (because the old schema can have multiple days per job).
-    """
-    conn = get_conn()
-    try:
-        cur = conn.execute(
-            f"DELETE FROM {TABLE_NAME} WHERE job_id = ?;",
-            (job_number,),
-        )
-        conn.commit()
-        return cur.rowcount > 0
-    finally:
-        conn.close()
-
-
-# Backwards-compat alias (if you still import these somewhere)
-def get_job_by_number_or_none(job_number: str) -> Optional[Dict[str, Any]]:
-    return get_job_by_number(job_number)
-
-
-def update_job_by_number(*args, **kwargs) -> bool:
-    return update_job(*args, **kwargs)
