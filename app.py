@@ -285,25 +285,23 @@ def page_add_entry():
             st.error("Job ID is required.")
             return
 
-        payload = {
-            "work_date": work_date,
-            "job_id": job_id,
-            "category": category,
-            "job_status": job_status,
-            "vehicle_description": vehicle_description,
-            "vehicle_reg": vehicle_reg,
-            "collection_from": collection_from,
-            "delivery_to": delivery_to,
-            "amount": float(amount),
-            "job_expenses": job_expenses,
-            "expenses_amount": float(expenses_amount),
-            "auth_code": auth_code,
-            "waiting_time": waiting_time,
-            "comments": comments,
-        }
-
         try:
-            new_id = DB["insert_row"](payload)
+            new_id = DB["insert_row"](
+                work_date_val=work_date,
+                job_number=job_id,
+                job_type=category,
+                vehicle_description=vehicle_description,
+                vehicle_reg=vehicle_reg,
+                collection_from=collection_from,
+                delivery_to=delivery_to,
+                job_amount=float(amount),
+                job_expenses=job_expenses,
+                expenses_amount=float(expenses_amount),
+                auth_code=auth_code,
+                job_status=job_status,
+                waiting_time_raw=waiting_time,
+                comments=comments,
+            )
             st.success(f"Saved. New entry id: {new_id}")
             st.rerun()
         except Exception as e:
