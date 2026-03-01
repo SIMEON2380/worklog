@@ -5,7 +5,6 @@ from worklog.config import Config
 from worklog.db import make_db
 from worklog.auth import ensure_default_user, verify_login, change_password
 
-
 cfg = Config()
 DB = make_db(cfg)
 
@@ -18,6 +17,34 @@ ensure_default_user(cfg)
 # Session state
 if "auth_user" not in st.session_state:
     st.session_state.auth_user = None
+
+
+# ---------- UI rules ----------
+HIDE_COLS = {
+    # You requested these removed from table display
+    "id",
+    "auth_code",
+    "waiting_hours",
+    "created_at",
+    "hours",
+    "postcode",
+    "customer_name",
+    "custmer_name",  # just in case the column is misspelled
+    "site_address",
+    "update",
+}
+
+# optional: hide common variants if your DB used spaces/case differences
+HIDE_COLS |= {
+    "Auth Code",
+    "Waiting Hours",
+    "Created At",
+    "Customer Name",
+    "Site Address",
+    "Postcode",
+    "Hours",
+    "Update",
+}
 
 
 # ---------- Auth ----------
@@ -42,50 +69,7 @@ def login_view():
 def sidebar_controls():
     with st.sidebar:
         st.write(f"👤 **{st.session_state.auth_user}**")
-        page = st.radio(
-            "Pages",
-            ["Dashboard", "Inspect & Collect", "Status Board", "Change Password"],
-            index=0,
-        )
-
-        if st.button("Logout"):
-            st.session_state.auth_user = None
-            st.rerun()
-
-    return page
-
-
-# ---------- Metrics ----------
-def show_top_metrics_from_old_schema(df: pd.DataFrame):
-    if df.empty:
-        st.info("No jobs found.")
-        return
-
-    total_jobs = int(len(df))
-    total_job = pd.to_numeric(df["amount"], errors="coerce").fillna(0).sum()
-    total_exp = pd.to_numeric(df["expenses_amount"], errors="coerce").fillna(0).sum()
-    total_wait = pd.to_numeric(df["waiting_amount"], errors="coerce").fillna(0).sum()
-
-    df_money = df[df["job_status"].astype(str).str.lower().str.strip() != "withdraw"].copy()
-    ic_jobs = df_money[df_money["category"].isin(cfg.INSPECT_COLLECT_TYPES)]
-    ic_pay_total = float(len(ic_jobs) * cfg.INSPECT_COLLECT_RATE)
-
-    total_owed = float(total_job + total_exp + total_wait + ic_pay_total)
-
-    c1, c2, c3, c4, c5 = st.columns(5)
-    c1.metric("Jobs", f"{total_jobs:,}")
-    c2.metric("Job amount", f"£{total_job:,.2f}")
-    c3.metric("Expenses", f"£{total_exp:,.2f}")
-    c4.metric("Waiting owed", f"£{total_wait:,.2f}")
-    c5.metric("Total owed", f"£{total_owed:,.2f}")
-
-
-def status_bar_from_old_schema(df: pd.DataFrame):
-    if df.empty:
-        return
-    counts = df["job_status"].fillna("Unknown").value_counts()
-    st.subheader("Status overview")
-    st.bar_chart(counts)
+        # radio removed as requested
 
 
 # ---------- Styling (your colour scheme) ----------
@@ -109,16 +93,23 @@ def _format_money_cols(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
+def _apply_hide_cols(df: pd.DataFrame) -> pd.DataFrame:
+    if df.empty:
+        return df
+    to_drop = [c for c in df.columns if c in HIDE_COLS]
+    return df.drop(columns=to_drop, errors="ignore")
+
+
 def render_coloured_table_view(df: pd.DataFrame):
     """
     Pretty view-only table with your color scheme.
-    Uses the original column names and shows everything, including comments/locations.
+    Hides columns you asked to remove from the table display.
     """
     if df.empty:
         st.write("No rows to show.")
         return
 
-    # Put most important columns first, but keep everything available
+    # Keep your preferred ordering but we will hide the requested columns
     preferred_order = [
         "id",
         "work_date",
@@ -138,10 +129,12 @@ def render_coloured_table_view(df: pd.DataFrame):
         "waiting_amount",
         "comments",
         "created_at",
+        # plus any extra columns you may already have
     ]
 
     cols = [c for c in preferred_order if c in df.columns] + [c for c in df.columns if c not in preferred_order]
     view = df[cols].copy()
+    view = _apply_hide_cols(view)
     view = _format_money_cols(view)
 
     sty = view.style.apply(_row_status_style, axis=1)
@@ -161,11 +154,16 @@ def render_coloured_table_view(df: pd.DataFrame):
 
 def editable_full_status_editor(df: pd.DataFrame, key: str):
     """
-    Full table visible, only job_status editable.
-    Also shows a coloured view table above for the nice look.
+    Shows a coloured view table (with hidden columns),
+    and an editor where ONLY job_status is editable.
+    Uses 'id' as the internal key but hides it from the UI.
     """
     if df.empty:
         st.write("No rows to show.")
+        return
+
+    if "id" not in df.columns:
+        st.error("Missing required column: id (needed to save edits safely).")
         return
 
     st.caption("Colour view (Paid=green, Withdraw=yellow, Aborted=red)")
@@ -174,13 +172,18 @@ def editable_full_status_editor(df: pd.DataFrame, key: str):
     st.divider()
     st.caption("Edit job_status below, then click Save (everything else is locked).")
 
-    # Editor dataframe: keep original names, keep all columns
     edit_df = df.copy()
+
+    # Use id as index so it does NOT appear as a column in the editor
+    edit_df = edit_df.set_index("id")
 
     disabled_cols = [c for c in edit_df.columns if c != "job_status"]
 
+    # Hide columns you requested from display in the editor too
+    edit_df_visible = _apply_hide_cols(edit_df)
+
     edited = st.data_editor(
-        edit_df,
+        edit_df_visible,
         key=key,
         num_rows="fixed",
         disabled=disabled_cols,
@@ -188,13 +191,16 @@ def editable_full_status_editor(df: pd.DataFrame, key: str):
             "job_status": st.column_config.SelectboxColumn("job_status", options=cfg.STATUS_OPTIONS),
         },
         use_container_width=True,
+        hide_index=True,  # hides the id index
     )
 
     if st.button("Save status changes", key=f"{key}_save"):
         changes = 0
 
+        # Compare against original (still indexed by id)
         orig = df.set_index("id")
-        new = edited.set_index("id")
+        # edited currently has the same index as edit_df_visible (id index)
+        new = edited.copy()
 
         for row_id in new.index:
             before = str(orig.loc[row_id, "job_status"])
@@ -211,13 +217,13 @@ def editable_full_status_editor(df: pd.DataFrame, key: str):
                     vehicle_reg=full["vehicle_reg"],
                     collection_from=full["collection_from"],
                     delivery_to=full["delivery_to"],
-                    job_amount=float(full["amount"] or 0.0),
-                    job_expenses=full["job_expenses"],
-                    expenses_amount=float(full["expenses_amount"] or 0.0),
-                    auth_code=full["auth_code"],
+                    job_amount=float(full.get("amount") or 0.0),
+                    job_expenses=full.get("job_expenses"),
+                    expenses_amount=float(full.get("expenses_amount") or 0.0),
+                    auth_code=full.get("auth_code"),
                     job_status=after,
-                    waiting_time_raw=str(full["waiting_time"] or ""),
-                    comments=str(full["comments"] or ""),
+                    waiting_time_raw=str(full.get("waiting_time") or ""),
+                    comments=str(full.get("comments") or ""),
                 )
                 changes += 1
 
@@ -230,42 +236,7 @@ def page_dashboard():
     st.title("Dashboard")
     st.caption("All jobs in the database.")
 
-    df_all = DB["read_all"]()
-
-    c1, c2, c3, c4 = st.columns(4)
-    date_from = c1.date_input("From", value=None)
-    date_to = c2.date_input("To", value=None)
-    status = c3.selectbox("Status", ["All"] + cfg.STATUS_OPTIONS, index=0)
-    job_type = c4.selectbox("Job type", ["All"] + cfg.JOB_TYPE_OPTIONS, index=0)
-    search = st.text_input("Search (job / reg / auth / locations / comments)", placeholder="type anything...").strip()
-
-    df = df_all.copy()
-    if not df.empty:
-        df = df[df["work_date"].notna()].copy()
-
-        if date_from:
-            df = df[df["work_date"] >= date_from]
-        if date_to:
-            df = df[df["work_date"] <= date_to]
-        if status != "All":
-            df = df[df["job_status"] == status]
-        if job_type != "All":
-            df = df[df["category"] == job_type]
-
-        if search:
-            mask = (
-                df["job_id"].astype(str).str.contains(search, case=False, na=False)
-                | df["vehicle_reg"].astype(str).str.contains(search, case=False, na=False)
-                | df["auth_code"].astype(str).str.contains(search, case=False, na=False)
-                | df["collection_from"].astype(str).str.contains(search, case=False, na=False)
-                | df["delivery_to"].astype(str).str.contains(search, case=False, na=False)
-                | df["comments"].astype(str).str.contains(search, case=False, na=False)
-            )
-            df = df[mask]
-
-    show_top_metrics_from_old_schema(df)
-    status_bar_from_old_schema(df)
-
+    df = DB["read_all"]()
     st.subheader("All jobs (view + edit job_status)")
     editable_full_status_editor(df, key="dashboard_full_editor")
 
@@ -277,7 +248,6 @@ def page_inspect_collect():
     df_all = DB["read_all"]()
     df = df_all[df_all["category"].isin(cfg.INSPECT_COLLECT_TYPES)].copy() if not df_all.empty else df_all
 
-    show_top_metrics_from_old_schema(df)
     st.subheader("Inspect & Collect jobs (view + edit job_status)")
     editable_full_status_editor(df, key="inspect_full_editor")
 
@@ -290,15 +260,14 @@ def page_status_board():
     df_all = DB["read_all"]()
     df = df_all[df_all["job_status"] == picked].copy() if not df_all.empty else df_all
 
-    show_top_metrics_from_old_schema(df)
-
     st.subheader(f"Jobs with status: {picked} (view + edit job_status)")
     editable_full_status_editor(df, key="status_board_full_editor")
 
 
-def page_change_password():
-    st.title("Change Password")
+def page_settings():
+    st.title("Settings")
 
+    st.subheader("Change Password")
     old = st.text_input("Old password", type="password")
     new = st.text_input("New password", type="password")
     new2 = st.text_input("Confirm new password", type="password")
@@ -306,26 +275,33 @@ def page_change_password():
     if st.button("Update password", type="primary"):
         if new != new2:
             st.error("New passwords do not match.")
-            return
-
-        msg = change_password(cfg, st.session_state.auth_user, old, new)
-        if msg == "Password updated.":
-            st.success(msg)
         else:
-            st.error(msg)
+            msg = change_password(cfg, st.session_state.auth_user, old, new)
+            if msg == "Password updated.":
+                st.success(msg)
+            else:
+                st.error(msg)
+
+    st.divider()
+
+    st.subheader("Logout")
+    if st.button("Logout"):
+        st.session_state.auth_user = None
+        st.rerun()
 
 
 # ---------- App flow ----------
 if not st.session_state.auth_user:
     login_view()
 else:
-    page = sidebar_controls()
+    sidebar_controls()
 
-    if page == "Dashboard":
+    tabs = st.tabs(["Dashboard", "Inspect & Collect", "Status Board", "Settings"])
+    with tabs[0]:
         page_dashboard()
-    elif page == "Inspect & Collect":
+    with tabs[1]:
         page_inspect_collect()
-    elif page == "Status Board":
+    with tabs[2]:
         page_status_board()
-    elif page == "Change Password":
-        page_change_password()
+    with tabs[3]:
+        page_settings()
