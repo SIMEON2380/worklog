@@ -55,19 +55,17 @@ def sidebar_controls():
     return page
 
 
-# ---------- Small UI helpers (kept simple + stable) ----------
+# ---------- Metrics ----------
 def show_top_metrics_from_old_schema(df: pd.DataFrame):
     if df.empty:
         st.info("No jobs found.")
         return
 
-    # Your schema names
     total_jobs = int(len(df))
     total_job = pd.to_numeric(df["amount"], errors="coerce").fillna(0).sum()
     total_exp = pd.to_numeric(df["expenses_amount"], errors="coerce").fillna(0).sum()
     total_wait = pd.to_numeric(df["waiting_amount"], errors="coerce").fillna(0).sum()
 
-    # Inspect & Collect pay (matches your old logic)
     df_money = df[df["job_status"].astype(str).str.lower().str.strip() != "withdraw"].copy()
     ic_jobs = df_money[df_money["category"].isin(cfg.INSPECT_COLLECT_TYPES)]
     ic_pay_total = float(len(ic_jobs) * cfg.INSPECT_COLLECT_RATE)
@@ -90,26 +88,104 @@ def status_bar_from_old_schema(df: pd.DataFrame):
     st.bar_chart(counts)
 
 
-def editable_status_table_old_schema(df: pd.DataFrame, key: str):
+# ---------- Styling (your colour scheme) ----------
+def _row_status_style(row: pd.Series):
+    status = str(row.get("job_status", "")).strip().lower()
+    base = "color: #111; font-weight: 600;"
+    if status == "paid":
+        return [base + "background-color: #d1fae5;"] * len(row)  # green
+    if status == "withdraw":
+        return [base + "background-color: #fde68a;"] * len(row)  # yellow
+    if status == "aborted":
+        return [base + "background-color: #fecaca;"] * len(row)  # red
+    return [base] * len(row)
+
+
+def _format_money_cols(df: pd.DataFrame) -> pd.DataFrame:
+    out = df.copy()
+    for c in ["amount", "expenses_amount", "waiting_amount"]:
+        if c in out.columns:
+            out[c] = pd.to_numeric(out[c], errors="coerce").fillna(0.0)
+    return out
+
+
+def render_coloured_table_view(df: pd.DataFrame):
     """
-    Minimal editor that only lets you change job_status (safe + won't break DB).
-    Uses update_row_by_id so waiting calc etc stays consistent.
+    Pretty view-only table with your color scheme.
+    Uses the original column names and shows everything, including comments/locations.
     """
     if df.empty:
         st.write("No rows to show.")
         return
 
-    # Only show key columns to reduce risk
-    view = df[["id", "work_date", "job_id", "category", "vehicle_reg", "auth_code", "job_status"]].copy()
-    view = view.rename(columns={"job_status": "status"})
+    # Put most important columns first, but keep everything available
+    preferred_order = [
+        "id",
+        "work_date",
+        "job_id",
+        "category",
+        "job_status",
+        "vehicle_description",
+        "vehicle_reg",
+        "collection_from",
+        "delivery_to",
+        "amount",
+        "job_expenses",
+        "expenses_amount",
+        "auth_code",
+        "waiting_time",
+        "waiting_hours",
+        "waiting_amount",
+        "comments",
+        "created_at",
+    ]
+
+    cols = [c for c in preferred_order if c in df.columns] + [c for c in df.columns if c not in preferred_order]
+    view = df[cols].copy()
+    view = _format_money_cols(view)
+
+    sty = view.style.apply(_row_status_style, axis=1)
+
+    fmt = {}
+    if "amount" in view.columns:
+        fmt["amount"] = lambda x: "" if pd.isna(x) else f"{float(x):.2f}"
+    if "expenses_amount" in view.columns:
+        fmt["expenses_amount"] = lambda x: "" if pd.isna(x) else f"{float(x):.2f}"
+    if "waiting_amount" in view.columns:
+        fmt["waiting_amount"] = lambda x: "" if pd.isna(x) else f"{float(x):.2f}"
+    if fmt:
+        sty = sty.format(fmt)
+
+    st.dataframe(sty, use_container_width=True, hide_index=True)
+
+
+def editable_full_status_editor(df: pd.DataFrame, key: str):
+    """
+    Full table visible, only job_status editable.
+    Also shows a coloured view table above for the nice look.
+    """
+    if df.empty:
+        st.write("No rows to show.")
+        return
+
+    st.caption("Colour view (Paid=green, Withdraw=yellow, Aborted=red)")
+    render_coloured_table_view(df)
+
+    st.divider()
+    st.caption("Edit job_status below, then click Save (everything else is locked).")
+
+    # Editor dataframe: keep original names, keep all columns
+    edit_df = df.copy()
+
+    disabled_cols = [c for c in edit_df.columns if c != "job_status"]
 
     edited = st.data_editor(
-        view,
+        edit_df,
         key=key,
         num_rows="fixed",
-        disabled=["id", "work_date", "job_id", "category", "vehicle_reg", "auth_code"],
+        disabled=disabled_cols,
         column_config={
-            "status": st.column_config.SelectboxColumn("status", options=cfg.STATUS_OPTIONS),
+            "job_status": st.column_config.SelectboxColumn("job_status", options=cfg.STATUS_OPTIONS),
         },
         use_container_width=True,
     )
@@ -117,17 +193,15 @@ def editable_status_table_old_schema(df: pd.DataFrame, key: str):
     if st.button("Save status changes", key=f"{key}_save"):
         changes = 0
 
-        orig = view.set_index("id")
+        orig = df.set_index("id")
         new = edited.set_index("id")
 
         for row_id in new.index:
-            before = str(orig.loc[row_id, "status"])
-            after = str(new.loc[row_id, "status"])
+            before = str(orig.loc[row_id, "job_status"])
+            after = str(new.loc[row_id, "job_status"])
             if before != after:
-                # Load full row so we can call update_row_by_id safely
                 full = df[df["id"] == row_id].iloc[0].to_dict()
 
-                # Keep everything identical except status
                 DB["update_row_by_id"](
                     row_id=int(row_id),
                     work_date_val=full["work_date"],
@@ -158,13 +232,12 @@ def page_dashboard():
 
     df_all = DB["read_all"]()
 
-    # Filters (basic)
     c1, c2, c3, c4 = st.columns(4)
     date_from = c1.date_input("From", value=None)
     date_to = c2.date_input("To", value=None)
     status = c3.selectbox("Status", ["All"] + cfg.STATUS_OPTIONS, index=0)
     job_type = c4.selectbox("Job type", ["All"] + cfg.JOB_TYPE_OPTIONS, index=0)
-    search = st.text_input("Search (job / reg / auth / locations)", placeholder="type anything...").strip()
+    search = st.text_input("Search (job / reg / auth / locations / comments)", placeholder="type anything...").strip()
 
     df = df_all.copy()
     if not df.empty:
@@ -193,8 +266,8 @@ def page_dashboard():
     show_top_metrics_from_old_schema(df)
     status_bar_from_old_schema(df)
 
-    st.subheader("All jobs (edit status)")
-    editable_status_table_old_schema(df, key="dashboard_status_editor")
+    st.subheader("All jobs (view + edit job_status)")
+    editable_full_status_editor(df, key="dashboard_full_editor")
 
 
 def page_inspect_collect():
@@ -205,8 +278,8 @@ def page_inspect_collect():
     df = df_all[df_all["category"].isin(cfg.INSPECT_COLLECT_TYPES)].copy() if not df_all.empty else df_all
 
     show_top_metrics_from_old_schema(df)
-    st.subheader("Inspect & Collect jobs (edit status)")
-    editable_status_table_old_schema(df, key="inspect_status_editor")
+    st.subheader("Inspect & Collect jobs (view + edit job_status)")
+    editable_full_status_editor(df, key="inspect_full_editor")
 
 
 def page_status_board():
@@ -219,8 +292,8 @@ def page_status_board():
 
     show_top_metrics_from_old_schema(df)
 
-    st.subheader(f"Jobs with status: {picked} (edit status)")
-    editable_status_table_old_schema(df, key="status_board_editor")
+    st.subheader(f"Jobs with status: {picked} (view + edit job_status)")
+    editable_full_status_editor(df, key="status_board_full_editor")
 
 
 def page_change_password():
