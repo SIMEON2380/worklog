@@ -410,7 +410,7 @@ def make_db(cfg: Config):
         job_status: str,
         waiting_time_raw: str,
         comments: str,
-    ):
+    ) -> int:
         job_number = clean_job_number(job_number)
 
         w_hours, w_norm = parse_waiting_time(waiting_time_raw)
@@ -432,7 +432,7 @@ def make_db(cfg: Config):
         exp_amt = coerce_money(expenses_amount)
 
         with get_conn() as conn:
-            conn.execute(
+            cur = conn.execute(
                 f"""
                 INSERT INTO {CFG.TABLE_NAME}
                   (
@@ -467,6 +467,7 @@ def make_db(cfg: Config):
                 ),
             )
             conn.commit()
+            return int(cur.lastrowid)
 
     def update_row_by_id(
         row_id: int,

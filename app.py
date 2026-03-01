@@ -26,12 +26,14 @@ HIDE_COLS = {
     "auth_code",
     "waiting_hours",
     "created_at",
+    "updated_at",
     "hours",
     "postcode",
     "customer_name",
     "custmer_name",  # just in case the column is misspelled
     "site_address",
     "update",
+    "description",
 }
 
 # optional: hide common variants if your DB used spaces/case differences
@@ -39,11 +41,14 @@ HIDE_COLS |= {
     "Auth Code",
     "Waiting Hours",
     "Created At",
+    "Updated At",
     "Customer Name",
     "Site Address",
     "Postcode",
     "Hours",
     "Update",
+    "Description",
+    "job_description",
 }
 
 
@@ -129,6 +134,8 @@ def render_coloured_table_view(df: pd.DataFrame):
         "waiting_amount",
         "comments",
         "created_at",
+        "updated_at",
+        "description",
         # plus any extra columns you may already have
     ]
 
@@ -241,6 +248,68 @@ def page_dashboard():
     editable_full_status_editor(df, key="dashboard_full_editor")
 
 
+def page_add_entry():
+    st.title("Add Entry")
+    st.caption("Add a new job entry.")
+
+    if "insert_row" not in DB:
+        st.error("DB insert function is missing. Add DB['insert_row'] in worklog/db.py.")
+        return
+
+    with st.form("add_entry_form", clear_on_submit=True):
+        work_date = st.date_input("Work date")
+        job_id = st.text_input("Job ID / Job Number").strip()
+        category = st.selectbox("Job type", cfg.JOB_TYPE_OPTIONS, index=0)
+        job_status = st.selectbox("Job status", cfg.STATUS_OPTIONS, index=0)
+
+        vehicle_description = st.text_input("Vehicle description").strip()
+        vehicle_reg = st.text_input("Vehicle reg").strip()
+
+        collection_from = st.text_input("Collection from").strip()
+        delivery_to = st.text_input("Delivery to").strip()
+
+        amount = st.number_input("Job amount (£)", min_value=0.0, step=1.0, format="%.2f")
+
+        job_expenses = st.selectbox("Expense type", [""] + cfg.JOB_EXPENSE_OPTIONS, index=0)
+        expenses_amount = st.number_input("Expenses amount (£)", min_value=0.0, step=1.0, format="%.2f")
+
+        auth_code = st.text_input("Auth code").strip()
+        waiting_time = st.text_input("Waiting time (raw)", placeholder="e.g. 1h 30m or 90").strip()
+
+        comments = st.text_area("Comments").strip()
+
+        submitted = st.form_submit_button("Save entry", type="primary")
+
+    if submitted:
+        if not job_id:
+            st.error("Job ID is required.")
+            return
+
+        payload = {
+            "work_date": work_date,
+            "job_id": job_id,
+            "category": category,
+            "job_status": job_status,
+            "vehicle_description": vehicle_description,
+            "vehicle_reg": vehicle_reg,
+            "collection_from": collection_from,
+            "delivery_to": delivery_to,
+            "amount": float(amount),
+            "job_expenses": job_expenses,
+            "expenses_amount": float(expenses_amount),
+            "auth_code": auth_code,
+            "waiting_time": waiting_time,
+            "comments": comments,
+        }
+
+        try:
+            new_id = DB["insert_row"](payload)
+            st.success(f"Saved. New entry id: {new_id}")
+            st.rerun()
+        except Exception as e:
+            st.error(f"Failed to save entry: {e}")
+
+
 def page_inspect_collect():
     st.title("Inspect & Collect")
     st.caption("Only Inspect & Collect jobs. You can edit these and set status to Paid.")
@@ -296,12 +365,14 @@ if not st.session_state.auth_user:
 else:
     sidebar_controls()
 
-    tabs = st.tabs(["Dashboard", "Inspect & Collect", "Status Board", "Settings"])
+    tabs = st.tabs(["Dashboard", "Add Entry", "Inspect & Collect", "Status Board", "Settings"])
     with tabs[0]:
         page_dashboard()
     with tabs[1]:
-        page_inspect_collect()
+        page_add_entry()
     with tabs[2]:
-        page_status_board()
+        page_inspect_collect()
     with tabs[3]:
+        page_status_board()
+    with tabs[4]:
         page_settings()
