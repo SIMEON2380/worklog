@@ -19,358 +19,254 @@ if "auth_user" not in st.session_state:
     st.session_state.auth_user = None
 
 
-# ---------- UI rules ----------
-HIDE_COLS = {
-    # You requested these removed from table display
-    "id",
-    "auth_code",
-    "waiting_hours",
-    "created_at",
-    "updated_at",
-    "hours",
-    "postcode",
-    "customer_name",
-    "custmer_name",  # just in case the column is misspelled
-    "site_address",
-    "update",
-    "description",
-}
-
-# optional: hide common variants if your DB used spaces/case differences
-HIDE_COLS |= {
-    "Auth Code",
-    "Waiting Hours",
-    "Created At",
-    "Updated At",
-    "Customer Name",
-    "Site Address",
-    "Postcode",
-    "Hours",
-    "Update",
-    "Description",
-    "job_description",
-}
-
-
-# ---------- Auth ----------
-def login_view():
-    st.title(cfg.APP_TITLE)
-    st.caption("Login required.")
-
-    col1, col2 = st.columns([1, 2])
-    with col1:
-        username = st.text_input("Username", value="admin")
-        password = st.text_input("Password", type="password")
-
-        if st.button("Login", type="primary"):
-            if verify_login(cfg, username, password):
-                st.session_state.auth_user = username
-                st.success("Logged in.")
-                st.rerun()
-            else:
-                st.error("Wrong username or password.")
-
-
-def sidebar_controls():
-    with st.sidebar:
-        st.write(f"👤 **{st.session_state.auth_user}**")
-        # radio removed as requested
-
-
-# ---------- Styling (your colour scheme) ----------
-def _row_status_style(row: pd.Series):
-    status = str(row.get("job_status", "")).strip().lower()
-    base = "color: #111; font-weight: 600;"
-    if status == "paid":
-        return [base + "background-color: #d1fae5;"] * len(row)  # green
-    if status == "withdraw":
-        return [base + "background-color: #fde68a;"] * len(row)  # yellow
-    if status == "aborted":
-        return [base + "background-color: #fecaca;"] * len(row)  # red
-    return [base] * len(row)
-
-
-def _format_money_cols(df: pd.DataFrame) -> pd.DataFrame:
-    out = df.copy()
-    for c in ["amount", "expenses_amount", "waiting_amount"]:
-        if c in out.columns:
-            out[c] = pd.to_numeric(out[c], errors="coerce").fillna(0.0)
-    return out
-
-
-def _apply_hide_cols(df: pd.DataFrame) -> pd.DataFrame:
-    if df.empty:
-        return df
-    to_drop = [c for c in df.columns if c in HIDE_COLS]
-    return df.drop(columns=to_drop, errors="ignore")
-
-
-def render_coloured_table_view(df: pd.DataFrame):
-    """
-    Pretty view-only table with your color scheme.
-    Hides columns you asked to remove from the table display.
-    """
-    if df.empty:
-        st.write("No rows to show.")
-        return
-
-    # Keep your preferred ordering but we will hide the requested columns
-    preferred_order = [
-        "id",
+# ---------- helpers ----------
+def _pick_date_col(df: pd.DataFrame) -> str | None:
+    candidates = [
+        "job_date",
+        "date",
         "work_date",
-        "job_id",
-        "category",
-        "job_status",
-        "vehicle_description",
-        "vehicle_reg",
-        "collection_from",
-        "delivery_to",
-        "amount",
-        "job_expenses",
-        "expenses_amount",
-        "auth_code",
-        "waiting_time",
-        "waiting_hours",
-        "waiting_amount",
-        "comments",
         "created_at",
         "updated_at",
-        "description",
-        # plus any extra columns you may already have
+        "timestamp",
+        "time",
+    ]
+    for c in candidates:
+        if c in df.columns:
+            return c
+    return None
+
+
+def _coerce_datetime(s: pd.Series) -> pd.Series:
+    return pd.to_datetime(s, errors="coerce", utc=False)
+
+
+def get_jobs_df() -> pd.DataFrame:
+    """
+    Tries common DB function keys. Adjust only if your DB uses a different key.
+    """
+    candidates = [
+        "get_jobs_df",
+        "get_all_jobs_df",
+        "fetch_all_df",
+        "read_all_df",
+        "all_jobs_df",
+        "select_all_df",
     ]
 
-    cols = [c for c in preferred_order if c in df.columns] + [c for c in df.columns if c not in preferred_order]
-    view = df[cols].copy()
-    view = _apply_hide_cols(view)
-    view = _format_money_cols(view)
+    for key in candidates:
+        fn = DB.get(key)
+        if callable(fn):
+            df = fn()
+            if df is None:
+                return pd.DataFrame()
+            if not isinstance(df, pd.DataFrame):
+                df = pd.DataFrame(df)
+            return df
 
-    sty = view.style.apply(_row_status_style, axis=1)
+    fallback_candidates = ["get_jobs", "fetch_all", "read_all", "select_all"]
+    for key in fallback_candidates:
+        fn = DB.get(key)
+        if callable(fn):
+            rows = fn()
+            if rows is None:
+                return pd.DataFrame()
+            return pd.DataFrame(rows)
 
-    fmt = {}
-    if "amount" in view.columns:
-        fmt["amount"] = lambda x: "" if pd.isna(x) else f"{float(x):.2f}"
-    if "expenses_amount" in view.columns:
-        fmt["expenses_amount"] = lambda x: "" if pd.isna(x) else f"{float(x):.2f}"
-    if "waiting_amount" in view.columns:
-        fmt["waiting_amount"] = lambda x: "" if pd.isna(x) else f"{float(x):.2f}"
-    if fmt:
-        sty = sty.format(fmt)
-
-    st.dataframe(sty, use_container_width=True, hide_index=True)
+    st.error(
+        "Can't find a DB function to load jobs as a DataFrame.\n\n"
+        "Add one of these keys in worklog/db.py make_db(): "
+        "get_jobs_df / get_all_jobs_df / fetch_all_df / read_all_df."
+    )
+    st.stop()
 
 
-def editable_full_status_editor(df: pd.DataFrame, key: str):
+def _find_status_col(df: pd.DataFrame) -> str | None:
+    for c in ["job_status", "status", "Job Status", "Status"]:
+        if c in df.columns:
+            return c
+    return None
+
+
+def _find_money_col(df: pd.DataFrame) -> str | None:
+    for c in ["total", "amount", "price", "pay", "earnings", "total_pay"]:
+        if c in df.columns:
+            return c
+    return None
+
+
+def render_report(df: pd.DataFrame, mode: str):
     """
-    Shows a coloured view table (with hidden columns),
-    and an editor where ONLY job_status is editable.
-    Uses 'id' as the internal key but hides it from the UI.
+    mode: "daily" | "weekly" | "monthly"
     """
+    title = {"daily": "Daily Report", "weekly": "Weekly Report", "monthly": "Monthly Report"}[mode]
+    st.subheader(title)
+
     if df.empty:
-        st.write("No rows to show.")
+        st.info("No jobs found.")
         return
 
-    if "id" not in df.columns:
-        st.error("Missing required column: id (needed to save edits safely).")
+    date_col = _pick_date_col(df)
+    if not date_col:
+        st.warning(
+            "Report needs a date column (job_date/date/created_at/etc). "
+            "I couldn't find one in your table."
+        )
+        st.write("Columns found:", list(df.columns))
         return
 
-    st.caption("Colour view (Paid=green, Withdraw=yellow, Aborted=red)")
-    render_coloured_table_view(df)
+    df = df.copy()
+    df[date_col] = _coerce_datetime(df[date_col])
+    df = df.dropna(subset=[date_col])
+    if df.empty:
+        st.info("No rows have a valid date, so reports can't calculate.")
+        return
 
-    st.divider()
-    st.caption("Edit job_status below, then click Save (everything else is locked).")
+    # Build grouping key
+    df["_day"] = df[date_col].dt.date
 
-    edit_df = df.copy()
+    if mode == "daily":
+        df["_period"] = df["_day"]
 
-    # Use id as index so it does NOT appear as a column in the editor
-    edit_df = edit_df.set_index("id")
+        label = "Select day"
+        periods = sorted(df["_period"].unique(), reverse=True)
 
-    disabled_cols = [c for c in edit_df.columns if c != "job_status"]
+    elif mode == "weekly":
+        # Monday-start week
+        day_dt = pd.to_datetime(df["_day"])
+        week_start = (day_dt - pd.to_timedelta(day_dt.dt.dayofweek, unit="D")).dt.date
+        df["_period"] = week_start
 
-    # Hide columns you requested from display in the editor too
-    edit_df_visible = _apply_hide_cols(edit_df)
+        label = "Select week (Mon–Sun)"
+        periods = sorted(df["_period"].unique(), reverse=True)
 
-    edited = st.data_editor(
-        edit_df_visible,
-        key=key,
-        num_rows="fixed",
-        disabled=disabled_cols,
-        column_config={
-            "job_status": st.column_config.SelectboxColumn("job_status", options=cfg.STATUS_OPTIONS),
-        },
+    elif mode == "monthly":
+        # YYYY-MM
+        df["_period"] = df[date_col].dt.to_period("M").astype(str)
+
+        label = "Select month"
+        periods = sorted(df["_period"].unique(), reverse=True)
+
+    else:
+        st.error("Invalid report mode.")
+        return
+
+    selected = st.selectbox(label, periods, index=0)
+    sub = df[df["_period"] == selected].copy()
+
+    status_col = _find_status_col(sub)
+    money_col = _find_money_col(sub)
+
+    # Metrics
+    total_jobs = len(sub)
+
+    paid_jobs = 0
+    if status_col:
+        paid_jobs = (sub[status_col].astype(str).str.lower() == "paid").sum()
+
+    total_money = None
+    if money_col:
+        sub[money_col] = pd.to_numeric(sub[money_col], errors="coerce")
+        total_money = float(sub[money_col].fillna(0).sum())
+
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Jobs", int(total_jobs))
+    c2.metric("Paid jobs", int(paid_jobs))
+    c3.metric("Total", f"£{total_money:,.2f}" if total_money is not None else "—")
+
+    # Status breakdown
+    if status_col:
+        st.caption("Status breakdown")
+        vc = (
+            sub[status_col]
+            .astype(str)
+            .value_counts(dropna=False)
+            .rename_axis("status")
+            .reset_index(name="count")
+        )
+        st.dataframe(vc, use_container_width=True)
+
+    # Rows
+    st.caption("Jobs in selected period")
+    st.dataframe(
+        sub.drop(columns=["_day", "_period"], errors="ignore"),
         use_container_width=True,
-        hide_index=True,  # hides the id index
     )
 
-    if st.button("Save status changes", key=f"{key}_save"):
-        changes = 0
 
-        # Compare against original (still indexed by id)
-        orig = df.set_index("id")
-        # edited currently has the same index as edit_df_visible (id index)
-        new = edited.copy()
+# ---------- Auth UI ----------
+def render_login():
+    st.title(cfg.APP_TITLE)
+    st.subheader("Login")
 
-        for row_id in new.index:
-            before = str(orig.loc[row_id, "job_status"])
-            after = str(new.loc[row_id, "job_status"])
-            if before != after:
-                full = df[df["id"] == row_id].iloc[0].to_dict()
+    username = st.text_input("Username")
+    password = st.text_input("Password", type="password")
 
-                DB["update_row_by_id"](
-                    row_id=int(row_id),
-                    work_date_val=full["work_date"],
-                    job_number=full["job_id"],
-                    job_type=full["category"],
-                    vehicle_description=full["vehicle_description"],
-                    vehicle_reg=full["vehicle_reg"],
-                    collection_from=full["collection_from"],
-                    delivery_to=full["delivery_to"],
-                    job_amount=float(full.get("amount") or 0.0),
-                    job_expenses=full.get("job_expenses"),
-                    expenses_amount=float(full.get("expenses_amount") or 0.0),
-                    auth_code=full.get("auth_code"),
-                    job_status=after,
-                    waiting_time_raw=str(full.get("waiting_time") or ""),
-                    comments=str(full.get("comments") or ""),
-                )
-                changes += 1
-
-        st.success(f"Updated {changes} row(s).")
-        st.rerun()
-
-
-# ---------- Pages ----------
-def page_dashboard():
-    st.title("Dashboard")
-    st.caption("All jobs in the database.")
-
-    df = DB["read_all"]()
-    st.subheader("All jobs (view + edit job_status)")
-    editable_full_status_editor(df, key="dashboard_full_editor")
-
-
-def page_add_entry():
-    st.title("Add Entry")
-    st.caption("Add a new job entry.")
-
-    if "insert_row" not in DB:
-        st.error("DB insert function is missing. Add DB['insert_row'] in worklog/db.py.")
-        return
-
-    with st.form("add_entry_form", clear_on_submit=True):
-        work_date = st.date_input("Work date")
-        job_id = st.text_input("Job ID / Job Number").strip()
-        category = st.selectbox("Job type", cfg.JOB_TYPE_OPTIONS, index=0)
-        job_status = st.selectbox("Job status", cfg.STATUS_OPTIONS, index=0)
-
-        vehicle_description = st.text_input("Vehicle description").strip()
-        vehicle_reg = st.text_input("Vehicle reg").strip()
-
-        collection_from = st.text_input("Collection from").strip()
-        delivery_to = st.text_input("Delivery to").strip()
-
-        amount = st.number_input("Job amount (£)", min_value=0.0, step=1.0, format="%.2f")
-
-        job_expenses = st.selectbox("Expense type", [""] + cfg.JOB_EXPENSE_OPTIONS, index=0)
-        expenses_amount = st.number_input("Expenses amount (£)", min_value=0.0, step=1.0, format="%.2f")
-
-        auth_code = st.text_input("Auth code").strip()
-        waiting_time = st.text_input("Waiting time (raw)", placeholder="e.g. 1h 30m or 90").strip()
-
-        comments = st.text_area("Comments").strip()
-
-        submitted = st.form_submit_button("Save entry", type="primary")
-
-    if submitted:
-        if not job_id:
-            st.error("Job ID is required.")
-            return
-
-        try:
-            new_id = DB["insert_row"](
-                work_date_val=work_date,
-                job_number=job_id,
-                job_type=category,
-                vehicle_description=vehicle_description,
-                vehicle_reg=vehicle_reg,
-                collection_from=collection_from,
-                delivery_to=delivery_to,
-                job_amount=float(amount),
-                job_expenses=job_expenses,
-                expenses_amount=float(expenses_amount),
-                auth_code=auth_code,
-                job_status=job_status,
-                waiting_time_raw=waiting_time,
-                comments=comments,
-            )
-            st.success(f"Saved. New entry id: {new_id}")
+    if st.button("Login"):
+        user = verify_login(DB, username, password)
+        if user:
+            st.session_state.auth_user = user
+            st.success("Logged in")
             st.rerun()
-        except Exception as e:
-            st.error(f"Failed to save entry: {e}")
-
-
-def page_inspect_collect():
-    st.title("Inspect & Collect")
-    st.caption("Only Inspect & Collect jobs. You can edit these and set status to Paid.")
-
-    df_all = DB["read_all"]()
-    df = df_all[df_all["category"].isin(cfg.INSPECT_COLLECT_TYPES)].copy() if not df_all.empty else df_all
-
-    st.subheader("Inspect & Collect jobs (view + edit job_status)")
-    editable_full_status_editor(df, key="inspect_full_editor")
-
-
-def page_status_board():
-    st.title("Status Board")
-    st.caption("View jobs by status and change job statuses.")
-
-    picked = st.selectbox("Choose a status to view", cfg.STATUS_OPTIONS, index=0)
-    df_all = DB["read_all"]()
-    df = df_all[df_all["job_status"] == picked].copy() if not df_all.empty else df_all
-
-    st.subheader(f"Jobs with status: {picked} (view + edit job_status)")
-    editable_full_status_editor(df, key="status_board_full_editor")
-
-
-def page_settings():
-    st.title("Settings")
-
-    st.subheader("Change Password")
-    old = st.text_input("Old password", type="password")
-    new = st.text_input("New password", type="password")
-    new2 = st.text_input("Confirm new password", type="password")
-
-    if st.button("Update password", type="primary"):
-        if new != new2:
-            st.error("New passwords do not match.")
         else:
-            msg = change_password(cfg, st.session_state.auth_user, old, new)
-            if msg == "Password updated.":
-                st.success(msg)
+            st.error("Invalid credentials")
+
+
+def render_account():
+    st.subheader("Account")
+    st.caption(f"Signed in as: {st.session_state.auth_user}")
+
+    with st.expander("Change password", expanded=False):
+        current = st.text_input("Current password", type="password")
+        new = st.text_input("New password", type="password")
+        new2 = st.text_input("Confirm new password", type="password")
+
+        if st.button("Update password"):
+            if new != new2:
+                st.error("New passwords do not match.")
             else:
-                st.error(msg)
+                ok, msg = change_password(DB, st.session_state.auth_user, current, new)
+                if ok:
+                    st.success("Password changed.")
+                else:
+                    st.error(msg)
 
-    st.divider()
-
-    st.subheader("Logout")
     if st.button("Logout"):
         st.session_state.auth_user = None
         st.rerun()
 
 
-# ---------- App flow ----------
+# ---------- Main ----------
 if not st.session_state.auth_user:
-    login_view()
-else:
-    sidebar_controls()
+    render_login()
+    st.stop()
 
-    tabs = st.tabs(["Dashboard", "Add Entry", "Inspect & Collect", "Status Board", "Settings"])
-    with tabs[0]:
-        page_dashboard()
-    with tabs[1]:
-        page_add_entry()
-    with tabs[2]:
-        page_inspect_collect()
-    with tabs[3]:
-        page_status_board()
-    with tabs[4]:
-        page_settings()
+df = get_jobs_df()
+
+st.sidebar.title("Menu")
+page = st.sidebar.radio(
+    "Go to",
+    [
+        "Dashboard",
+        "Daily Report",
+        "Weekly Report",
+        "Monthly Report",
+        "Account",
+    ],
+)
+
+if page == "Dashboard":
+    st.title("Dashboard")
+    st.caption("All jobs in the database")
+    st.dataframe(df, use_container_width=True)
+
+elif page == "Daily Report":
+    render_report(df, "daily")
+
+elif page == "Weekly Report":
+    render_report(df, "weekly")
+
+elif page == "Monthly Report":
+    render_report(df, "monthly")
+
+elif page == "Account":
+    render_account()
