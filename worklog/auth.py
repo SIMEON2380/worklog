@@ -1,180 +1,191 @@
+# worklog/auth.py
 import sqlite3
 import hashlib
 import hmac
-from typing import Optional, Tuple, Any
+from datetime import datetime
+from typing import Any, Optional, Tuple
+
+import bcrypt
 
 
-def _get_cfg(cfg_or_db: Any):
-    if isinstance(cfg_or_db, dict):
-        if "cfg" in cfg_or_db:
-            return cfg_or_db["cfg"]
-        if "__cfg__" in cfg_or_db:
-            return cfg_or_db["__cfg__"]
-    return cfg_or_db
+def _utc_now_str() -> str:
+    return datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
 
 
-def _db_path(cfg_or_db: Any) -> str:
-    cfg = _get_cfg(cfg_or_db)
+def _db_path(cfg: Any) -> str:
+    # Config has DB_PATH as a @property
     if not hasattr(cfg, "DB_PATH"):
-        raise AttributeError("Config must have DB_PATH.")
+        raise AttributeError(
+            "verify_login/change_password must be called with Config (cfg), not the DB dict."
+        )
     return cfg.DB_PATH
 
 
-def _connect(cfg_or_db: Any):
-    conn = sqlite3.connect(_db_path(cfg_or_db), check_same_thread=False)
+def _connect(cfg: Any) -> sqlite3.Connection:
+    conn = sqlite3.connect(_db_path(cfg), check_same_thread=False)
     conn.row_factory = sqlite3.Row
     return conn
 
 
-def _hash_password(password: str, salt: str) -> str:
-    return hashlib.sha256((salt + password).encode("utf-8")).hexdigest()
-
-
-def _verify_password(password: str, salt: str, stored_hash: str) -> bool:
-    cand = _hash_password(password, salt)
-    return hmac.compare_digest(cand, stored_hash)
-
-
-def _get_user_columns(conn: sqlite3.Connection) -> set[str]:
-    rows = conn.execute("PRAGMA table_info(users)").fetchall()
+def _table_columns(conn: sqlite3.Connection, table: str) -> set[str]:
+    rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
     return {r["name"] for r in rows}
 
 
-def _ensure_users_schema(conn: sqlite3.Connection):
+def _ensure_users_schema(conn: sqlite3.Connection) -> None:
     """
-    Makes users table compatible with:
-      username, salt, password_hash
-    Also supports legacy:
-      username, password
+    Your live schema (confirmed):
+      username TEXT PRIMARY KEY
+      password_hash TEXT NOT NULL
+      created_at TEXT NOT NULL
+      updated_at TEXT NOT NULL
+      salt TEXT NULL
     """
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS users (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            username TEXT UNIQUE NOT NULL
+            username TEXT PRIMARY KEY,
+            password_hash TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            salt TEXT
         )
         """
     )
     conn.commit()
 
-    cols = _get_user_columns(conn)
+    cols = _table_columns(conn, "users")
 
-    # Add missing columns
-    if "salt" not in cols:
-        conn.execute("ALTER TABLE users ADD COLUMN salt TEXT")
-        conn.commit()
-        cols.add("salt")
-
+    # Add missing columns safely (SQLite)
     if "password_hash" not in cols:
         conn.execute("ALTER TABLE users ADD COLUMN password_hash TEXT")
-        conn.commit()
-        cols.add("password_hash")
+    if "created_at" not in cols:
+        conn.execute("ALTER TABLE users ADD COLUMN created_at TEXT")
+    if "updated_at" not in cols:
+        conn.execute("ALTER TABLE users ADD COLUMN updated_at TEXT")
+    if "salt" not in cols:
+        conn.execute("ALTER TABLE users ADD COLUMN salt TEXT")
+    conn.commit()
 
-    # If legacy 'password' exists, copy into password_hash where missing
-    if "password" in cols:
-        conn.execute(
-            """
-            UPDATE users
-               SET password_hash = COALESCE(password_hash, password)
-             WHERE password_hash IS NULL
-            """
-        )
-        conn.commit()
-
-    # Ensure salt not null (use empty string default for old rows)
-    conn.execute("UPDATE users SET salt = COALESCE(salt, '') WHERE salt IS NULL")
+    # Backfill required-ish fields
+    now = _utc_now_str()
+    conn.execute("UPDATE users SET created_at = COALESCE(created_at, ?) WHERE created_at IS NULL", (now,))
+    conn.execute("UPDATE users SET updated_at = COALESCE(updated_at, ?) WHERE updated_at IS NULL", (now,))
+    conn.execute("UPDATE users SET password_hash = COALESCE(password_hash, '') WHERE password_hash IS NULL")
     conn.commit()
 
 
-def ensure_default_user(cfg_or_db: Any):
-    cfg = _get_cfg(cfg_or_db)
+# --- password handling ---
+def _username_salt(username: str) -> str:
+    # deterministic salt used for SHA migration path
+    return hashlib.sha256(username.encode("utf-8")).hexdigest()[:16]
+
+
+def _sha256_salted(password: str, salt: str) -> str:
+    return hashlib.sha256((salt + password).encode("utf-8")).hexdigest()
+
+
+def _safe_eq(a: str, b: str) -> bool:
+    return hmac.compare_digest(str(a), str(b))
+
+
+def _verify_password(username: str, password: str, stored_hash: str, salt: str) -> bool:
+    stored_hash = stored_hash or ""
+    salt = salt or ""
+
+    # 1) bcrypt (your admin hash is $2b$12$...)
+    if stored_hash.startswith("$2"):
+        try:
+            return bcrypt.checkpw(password.encode("utf-8"), stored_hash.encode("utf-8"))
+        except Exception:
+            return False
+
+    # 2) salted sha256 (for migrated/new users)
+    if salt:
+        cand = _sha256_salted(password, salt)
+        return _safe_eq(cand, stored_hash)
+
+    # 3) legacy unsalted sha256(password)
+    cand_unsalted = hashlib.sha256(password.encode("utf-8")).hexdigest()
+    if _safe_eq(cand_unsalted, stored_hash):
+        return True
+
+    # 4) last resort plaintext (only if old system stored raw)
+    if _safe_eq(password, stored_hash):
+        return True
+
+    # 5) try username-derived salt (if someone reset with that scheme but salt not saved)
+    derived = _username_salt(username)
+    cand_derived = _sha256_salted(password, derived)
+    if _safe_eq(cand_derived, stored_hash):
+        return True
+
+    return False
+
+
+# --- public API ---
+def ensure_default_user(cfg: Any) -> None:
+    """
+    Creates default user if cfg.DEFAULT_USERNAME and cfg.DEFAULT_PASSWORD exist.
+    NOTE: This will create a SHA256-salted user, not bcrypt.
+    """
+    default_username = getattr(cfg, "DEFAULT_USERNAME", None)
+    default_password = getattr(cfg, "DEFAULT_PASSWORD", None)
+
+    if not default_username or not default_password:
+        return
+
     with _connect(cfg) as conn:
         _ensure_users_schema(conn)
 
-        default_username = getattr(cfg, "DEFAULT_USERNAME", None)
-        default_password = getattr(cfg, "DEFAULT_PASSWORD", None)
-
-        if not default_username or not default_password:
-            return
-
         row = conn.execute(
-            "SELECT 1 FROM users WHERE username = ?",
+            "SELECT username FROM users WHERE username = ?",
             (default_username,),
         ).fetchone()
 
         if row:
             return
 
-        # Create salted hash for default user
-        salt = hashlib.sha256(default_username.encode("utf-8")).hexdigest()[:16]
-        pw_hash = _hash_password(default_password, salt)
+        now = _utc_now_str()
+        salt = _username_salt(default_username)
+        pw_hash = _sha256_salted(default_password, salt)
 
         conn.execute(
-            "INSERT INTO users (username, salt, password_hash) VALUES (?, ?, ?)",
-            (default_username, salt, pw_hash),
+            """
+            INSERT INTO users (username, password_hash, created_at, updated_at, salt)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (default_username, pw_hash, now, now, salt),
         )
         conn.commit()
 
 
-def verify_login(cfg_or_db: Any, username: str, password: str) -> Optional[str]:
+def verify_login(cfg: Any, username: str, password: str) -> Optional[str]:
     if not username or not password:
         return None
 
-    with _connect(cfg_or_db) as conn:
+    with _connect(cfg) as conn:
         _ensure_users_schema(conn)
-        cols = _get_user_columns(conn)
+        row = conn.execute(
+            "SELECT username, password_hash, COALESCE(salt,'') AS salt FROM users WHERE username = ?",
+            (username,),
+        ).fetchone()
 
-        # Prefer new schema
-        if "salt" in cols and "password_hash" in cols:
-            row = conn.execute(
-                "SELECT username, salt, password_hash FROM users WHERE username = ?",
-                (username,),
-            ).fetchone()
+    if not row:
+        return None
 
-            if not row:
-                return None
-
-            salt = row["salt"] or ""
-            stored = row["password_hash"]
-
-            # If no stored hash yet, fail
-            if not stored:
-                return None
-
-            # If salt empty, treat as legacy unsalted hash storage
-            if salt == "":
-                # legacy: password_hash is either plain or already hashed
-                # try compare against SHA256(password) first, then raw compare
-                sha = hashlib.sha256(password.encode("utf-8")).hexdigest()
-                if hmac.compare_digest(stored, sha) or hmac.compare_digest(stored, password):
-                    return row["username"]
-                return None
-
-            # normal salted verify
-            if _verify_password(password, salt, stored):
-                return row["username"]
-
-            return None
-
-        # Ultra-legacy fallback: username + password column only
-        if "password" in cols:
-            row = conn.execute(
-                "SELECT username, password FROM users WHERE username = ?",
-                (username,),
-            ).fetchone()
-            if not row:
-                return None
-
-            stored = row["password"]
-            sha = hashlib.sha256(password.encode("utf-8")).hexdigest()
-            if hmac.compare_digest(stored, sha) or hmac.compare_digest(stored, password):
-                return row["username"]
-            return None
+    if _verify_password(
+        username=row["username"],
+        password=password,
+        stored_hash=row["password_hash"],
+        salt=row["salt"],
+    ):
+        return row["username"]
 
     return None
 
 
-def change_password(cfg_or_db: Any, username: str, current_password: str, new_password: str) -> Tuple[bool, str]:
+def change_password(cfg: Any, username: str, current_password: str, new_password: str) -> Tuple[bool, str]:
     if not username:
         return False, "Not logged in."
     if not current_password or not new_password:
@@ -182,21 +193,26 @@ def change_password(cfg_or_db: Any, username: str, current_password: str, new_pa
     if len(new_password) < 6:
         return False, "New password too short (min 6 chars)."
 
-    with _connect(cfg_or_db) as conn:
+    # verify current password
+    if not verify_login(cfg, username, current_password):
+        return False, "Current password is wrong."
+
+    # migrate/update using salted SHA256 (simple + consistent)
+    salt = _username_salt(username)
+    new_hash = _sha256_salted(new_password, salt)
+    now = _utc_now_str()
+
+    with _connect(cfg) as conn:
         _ensure_users_schema(conn)
-
-        # Verify current login first
-        ok_user = verify_login(cfg_or_db, username, current_password)
-        if not ok_user:
-            return False, "Current password is wrong."
-
-        # Set new salted hash
-        salt = hashlib.sha256(username.encode("utf-8")).hexdigest()[:16]
-        pw_hash = _hash_password(new_password, salt)
-
         conn.execute(
-            "UPDATE users SET salt = ?, password_hash = ? WHERE username = ?",
-            (salt, pw_hash, username),
+            """
+            UPDATE users
+               SET password_hash = ?,
+                   salt = ?,
+                   updated_at = ?
+             WHERE username = ?
+            """,
+            (new_hash, salt, now, username),
         )
         conn.commit()
 
