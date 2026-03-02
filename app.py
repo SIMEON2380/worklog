@@ -19,18 +19,9 @@ if "auth_user" not in st.session_state:
     st.session_state.auth_user = None
 
 
-# ---------- helpers ----------
+# ---------- data helpers ----------
 def _pick_date_col(df: pd.DataFrame) -> str | None:
-    candidates = [
-        "job_date",
-        "date",
-        "work_date",
-        "created_at",
-        "updated_at",
-        "timestamp",
-        "time",
-    ]
-    for c in candidates:
+    for c in ["job_date", "date", "work_date", "created_at", "updated_at", "timestamp", "time"]:
         if c in df.columns:
             return c
     return None
@@ -38,46 +29,6 @@ def _pick_date_col(df: pd.DataFrame) -> str | None:
 
 def _coerce_datetime(s: pd.Series) -> pd.Series:
     return pd.to_datetime(s, errors="coerce", utc=False)
-
-
-def get_jobs_df() -> pd.DataFrame:
-    """
-    Tries common DB function keys. Adjust only if your DB uses a different key.
-    """
-    candidates = [
-        "get_jobs_df",
-        "get_all_jobs_df",
-        "fetch_all_df",
-        "read_all_df",
-        "all_jobs_df",
-        "select_all_df",
-    ]
-
-    for key in candidates:
-        fn = DB.get(key)
-        if callable(fn):
-            df = fn()
-            if df is None:
-                return pd.DataFrame()
-            if not isinstance(df, pd.DataFrame):
-                df = pd.DataFrame(df)
-            return df
-
-    fallback_candidates = ["get_jobs", "fetch_all", "read_all", "select_all"]
-    for key in fallback_candidates:
-        fn = DB.get(key)
-        if callable(fn):
-            rows = fn()
-            if rows is None:
-                return pd.DataFrame()
-            return pd.DataFrame(rows)
-
-    st.error(
-        "Can't find a DB function to load jobs as a DataFrame.\n\n"
-        "Add one of these keys in worklog/db.py make_db(): "
-        "get_jobs_df / get_all_jobs_df / fetch_all_df / read_all_df."
-    )
-    st.stop()
 
 
 def _find_status_col(df: pd.DataFrame) -> str | None:
@@ -94,12 +45,45 @@ def _find_money_col(df: pd.DataFrame) -> str | None:
     return None
 
 
+def get_jobs_df() -> pd.DataFrame:
+    # tries common keys without changing your DB layer
+    candidates = [
+        "get_jobs_df",
+        "get_all_jobs_df",
+        "fetch_all_df",
+        "read_all_df",
+        "all_jobs_df",
+        "select_all_df",
+    ]
+    for key in candidates:
+        fn = DB.get(key)
+        if callable(fn):
+            df = fn()
+            if df is None:
+                return pd.DataFrame()
+            return df if isinstance(df, pd.DataFrame) else pd.DataFrame(df)
+
+    fallback = ["get_jobs", "fetch_all", "read_all", "select_all"]
+    for key in fallback:
+        fn = DB.get(key)
+        if callable(fn):
+            rows = fn()
+            if rows is None:
+                return pd.DataFrame()
+            return pd.DataFrame(rows)
+
+    st.error(
+        "Can't find a DB function to load all jobs.\n\n"
+        "Fix: in worklog/db.py make_db(), expose one of these keys:\n"
+        "get_jobs_df / get_all_jobs_df / fetch_all_df / read_all_df"
+    )
+    st.stop()
+
+
+# ---------- report renderer ----------
 def render_report(df: pd.DataFrame, mode: str):
-    """
-    mode: "daily" | "weekly" | "monthly"
-    """
-    title = {"daily": "Daily Report", "weekly": "Weekly Report", "monthly": "Monthly Report"}[mode]
-    st.subheader(title)
+    titles = {"daily": "Daily Report", "weekly": "Weekly Report", "monthly": "Monthly Report"}
+    st.subheader(titles[mode])
 
     if df.empty:
         st.info("No jobs found.")
@@ -107,42 +91,33 @@ def render_report(df: pd.DataFrame, mode: str):
 
     date_col = _pick_date_col(df)
     if not date_col:
-        st.warning(
-            "Report needs a date column (job_date/date/created_at/etc). "
-            "I couldn't find one in your table."
-        )
-        st.write("Columns found:", list(df.columns))
+        st.warning("No date column found (job_date/date/created_at/etc). Can't build reports.")
+        st.write("Columns:", list(df.columns))
         return
 
     df = df.copy()
     df[date_col] = _coerce_datetime(df[date_col])
     df = df.dropna(subset=[date_col])
     if df.empty:
-        st.info("No rows have a valid date, so reports can't calculate.")
+        st.info("No rows have a valid date.")
         return
 
-    # Build grouping key
     df["_day"] = df[date_col].dt.date
 
     if mode == "daily":
         df["_period"] = df["_day"]
-
         label = "Select day"
         periods = sorted(df["_period"].unique(), reverse=True)
 
     elif mode == "weekly":
-        # Monday-start week
         day_dt = pd.to_datetime(df["_day"])
         week_start = (day_dt - pd.to_timedelta(day_dt.dt.dayofweek, unit="D")).dt.date
         df["_period"] = week_start
-
         label = "Select week (Mon–Sun)"
         periods = sorted(df["_period"].unique(), reverse=True)
 
     elif mode == "monthly":
-        # YYYY-MM
         df["_period"] = df[date_col].dt.to_period("M").astype(str)
-
         label = "Select month"
         periods = sorted(df["_period"].unique(), reverse=True)
 
@@ -156,9 +131,7 @@ def render_report(df: pd.DataFrame, mode: str):
     status_col = _find_status_col(sub)
     money_col = _find_money_col(sub)
 
-    # Metrics
     total_jobs = len(sub)
-
     paid_jobs = 0
     if status_col:
         paid_jobs = (sub[status_col].astype(str).str.lower() == "paid").sum()
@@ -173,24 +146,18 @@ def render_report(df: pd.DataFrame, mode: str):
     c2.metric("Paid jobs", int(paid_jobs))
     c3.metric("Total", f"£{total_money:,.2f}" if total_money is not None else "—")
 
-    # Status breakdown
     if status_col:
         st.caption("Status breakdown")
         vc = (
-            sub[status_col]
-            .astype(str)
+            sub[status_col].astype(str)
             .value_counts(dropna=False)
             .rename_axis("status")
             .reset_index(name="count")
         )
         st.dataframe(vc, use_container_width=True)
 
-    # Rows
     st.caption("Jobs in selected period")
-    st.dataframe(
-        sub.drop(columns=["_day", "_period"], errors="ignore"),
-        use_container_width=True,
-    )
+    st.dataframe(sub.drop(columns=["_day", "_period"], errors="ignore"), use_container_width=True)
 
 
 # ---------- Auth UI ----------
@@ -202,7 +169,8 @@ def render_login():
     password = st.text_input("Password", type="password")
 
     if st.button("Login"):
-        user = verify_login(DB, username, password)
+        # IMPORTANT FIX: pass cfg, NOT DB dict
+        user = verify_login(cfg, username, password)
         if user:
             st.session_state.auth_user = user
             st.success("Logged in")
@@ -224,7 +192,8 @@ def render_account():
             if new != new2:
                 st.error("New passwords do not match.")
             else:
-                ok, msg = change_password(DB, st.session_state.auth_user, current, new)
+                # IMPORTANT FIX: pass cfg, NOT DB dict
+                ok, msg = change_password(cfg, st.session_state.auth_user, current, new)
                 if ok:
                     st.success("Password changed.")
                 else:
@@ -245,13 +214,7 @@ df = get_jobs_df()
 st.sidebar.title("Menu")
 page = st.sidebar.radio(
     "Go to",
-    [
-        "Dashboard",
-        "Daily Report",
-        "Weekly Report",
-        "Monthly Report",
-        "Account",
-    ],
+    ["Dashboard", "Daily Report", "Weekly Report", "Monthly Report", "Account"],
 )
 
 if page == "Dashboard":
