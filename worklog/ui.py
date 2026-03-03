@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import date
-from typing import Any, Dict, Optional, Tuple, List
+from typing import Any, Dict, Optional, Tuple
 
 import pandas as pd
 import streamlit as st
@@ -48,12 +48,11 @@ def db_to_ui_map(cfg: Config) -> Dict[str, str]:
 
 def to_ui_table(cfg: Config, df_db: pd.DataFrame) -> pd.DataFrame:
     """
-    Return a UI-formatted dataframe with:
-    - id kept (hidden in display but used for edits)
+    UI-formatted dataframe:
+    - keep id (hidden in display, used for edits)
     - columns in cfg.UI_COLUMNS order + exact labels
     """
     if df_db is None or df_db.empty:
-        # include id so editor logic doesn't explode
         cols = ["id"] + list(cfg.UI_COLUMNS)
         return pd.DataFrame(columns=cols)
 
@@ -63,7 +62,7 @@ def to_ui_table(cfg: Config, df_db: pd.DataFrame) -> pd.DataFrame:
     if "id" not in df.columns:
         df["id"] = None
 
-    # Ensure all expected DB cols exist
+    # Ensure expected DB cols exist
     for c in cfg.EXPECTED_DB_COLS:
         if c not in df.columns:
             df[c] = None
@@ -82,15 +81,13 @@ def to_ui_table(cfg: Config, df_db: pd.DataFrame) -> pd.DataFrame:
 
 def ui_row_to_db_fields(cfg: Config, ui_row: Dict[str, Any]) -> Dict[str, Any]:
     """
-    Convert a row dict from UI labels to DB fields (only the editable ones we care about).
+    Convert a row dict from UI labels to DB fields.
     """
     m = ui_to_db_map(cfg)
     out: Dict[str, Any] = {}
-
     for ui_col, db_col in m.items():
         if ui_col in ui_row:
             out[db_col] = ui_row[ui_col]
-
     return out
 
 
@@ -99,7 +96,7 @@ def ui_row_to_db_fields(cfg: Config, ui_row: Dict[str, Any]) -> Dict[str, Any]:
 # -------------------------
 def compute_totals(df_db: pd.DataFrame) -> Tuple[float, float, float]:
     """
-    Returns:
+    Backwards-compatible totals:
       total_job_amount, total_wait_hours, total_wait_amount
     """
     if df_db is None or df_db.empty:
@@ -112,11 +109,49 @@ def compute_totals(df_db: pd.DataFrame) -> Tuple[float, float, float]:
 
 
 def show_totals(df_db: pd.DataFrame) -> None:
+    """
+    Kept exactly so existing pages/features don't break.
+    """
     total_job_amount, total_wait_hours, total_wait_amount = compute_totals(df_db)
     c1, c2, c3 = st.columns(3)
     c1.metric("Total job amount", f"£{total_job_amount:,.2f}")
     c2.metric("Total waiting time", f"{total_wait_hours:,.2f} hrs")
     c3.metric("Waiting total", f"£{total_wait_amount:,.2f}")
+
+
+def report_totals(df: pd.DataFrame) -> Dict[str, float]:
+    """
+    Robust totals for reports (used by Daily/Weekly/Monthly):
+      job_amount, wait_hours, wait_pay, expenses, grand_total
+    grand_total = job_amount + wait_pay - expenses
+    """
+    if df is None or df.empty:
+        return {
+            "job_amount": 0.0,
+            "wait_hours": 0.0,
+            "wait_pay": 0.0,
+            "expenses": 0.0,
+            "grand_total": 0.0,
+        }
+
+    def num(col: str) -> pd.Series:
+        if col not in df.columns:
+            return pd.Series([0.0] * len(df), index=df.index)
+        return pd.to_numeric(df[col], errors="coerce").fillna(0.0)
+
+    job_amount = float(num("amount").sum())
+    wait_hours = float(num("waiting_hours").sum())
+    wait_pay = float(num("waiting_amount").sum())
+    expenses = float(num("expenses_amount").sum())
+    grand_total = job_amount + wait_pay - expenses
+
+    return {
+        "job_amount": job_amount,
+        "wait_hours": wait_hours,
+        "wait_pay": wait_pay,
+        "expenses": expenses,
+        "grand_total": grand_total,
+    }
 
 
 # -------------------------
@@ -127,8 +162,6 @@ def display_jobs_table(cfg: Config, df_db: pd.DataFrame, caption: Optional[str] 
         st.caption(caption)
 
     ui_df = to_ui_table(cfg, df_db)
-
-    # hide id from display but keep it in df
     show_df = ui_df.drop(columns=["id"], errors="ignore")
     st.dataframe(show_df, use_container_width=True)
 
@@ -144,8 +177,7 @@ def editable_jobs_table(
     allow_type_edit: bool = True,
 ) -> None:
     """
-    Inline editor with Save button using YOUR db.py API: update_row_by_id().
-    Edits UI columns, then maps to DB fields and calls update_row_by_id with full row values.
+    Inline editor + Save button using your db.py API: update_row_by_id().
     """
     if df_db is None or df_db.empty:
         st.info("No rows to show.")
@@ -180,18 +212,18 @@ def editable_jobs_table(
             after = updated.loc[row_id].to_dict()
 
             # detect diffs (UI-space)
-            diff_ui: Dict[str, Any] = {}
+            changed = False
             for k, v in after.items():
                 b = before.get(k)
                 if pd.isna(b) and pd.isna(v):
                     continue
                 if (pd.isna(b) and not pd.isna(v)) or (not pd.isna(b) and pd.isna(v)) or (str(b) != str(v)):
-                    diff_ui[k] = v
+                    changed = True
+                    break
 
-            if not diff_ui:
+            if not changed:
                 continue
 
-            # Build full row values (DB expects full set)
             row_db = ui_row_to_db_fields(cfg, after)
 
             # Convert date safely
@@ -201,8 +233,7 @@ def editable_jobs_table(
             # Convert numbers safely
             def fnum(x):
                 try:
-                    y = float(x)
-                    return y
+                    return float(x)
                 except Exception:
                     return None
 
