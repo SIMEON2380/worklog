@@ -28,11 +28,15 @@ if "id" not in df.columns:
     st.stop()
 
 # --- Choose the status column to edit ---
-# Your DB has BOTH 'job_status' and 'status'. The proper one is 'job_status'.
+# Your DB has BOTH 'job_status' and 'status'. Prefer 'job_status'.
 STATUS_COL = "job_status" if "job_status" in df.columns else ("status" if "status" in df.columns else None)
 
+# --- Choose job type column ---
+# In your schema, job type is stored as 'category'
+JOB_TYPE_COL = "category" if "category" in df.columns else None
+
 # Optional filters
-c1, c2, c3 = st.columns(3)
+c1, c2, c3, c4 = st.columns(4)
 
 job_id_filter = c1.text_input("Filter by Job Number (optional)") if "job_id" in df.columns else ""
 
@@ -47,6 +51,18 @@ if STATUS_COL:
     status_filter = c2.selectbox("Filter by Status (optional)", status_options)
 else:
     c2.info("No status column found.")
+
+job_type_filter = "All"
+if JOB_TYPE_COL:
+    existing_types = (
+        df[JOB_TYPE_COL].dropna().astype(str).unique().tolist()
+        if not df[JOB_TYPE_COL].dropna().empty
+        else []
+    )
+    type_options = ["All"] + list(dict.fromkeys(cfg.JOB_TYPE_OPTIONS + sorted(existing_types)))
+    job_type_filter = c4.selectbox("Filter by Job Type (optional)", type_options)
+else:
+    c4.info("No job type column found.")
 
 date_range = None
 if "work_date" in df.columns:
@@ -66,6 +82,9 @@ if job_id_filter and "job_id" in filtered.columns:
 if status_filter != "All" and STATUS_COL and STATUS_COL in filtered.columns:
     filtered = filtered[filtered[STATUS_COL].astype(str) == status_filter]
 
+if job_type_filter != "All" and JOB_TYPE_COL and JOB_TYPE_COL in filtered.columns:
+    filtered = filtered[filtered[JOB_TYPE_COL].astype(str) == job_type_filter]
+
 if (
     date_range
     and "work_date" in filtered.columns
@@ -80,7 +99,11 @@ st.caption("Edit values in the table, then click **Save changes**.")
 # Editable columns (keep tight)
 editable_cols = []
 
-# status first
+# job type first (so you can edit it)
+if JOB_TYPE_COL and JOB_TYPE_COL in filtered.columns:
+    editable_cols.append(JOB_TYPE_COL)
+
+# status
 if STATUS_COL and STATUS_COL in filtered.columns:
     editable_cols.append(STATUS_COL)
 
@@ -102,8 +125,17 @@ if not editable_cols:
 
 editor_df = filtered[["id"] + editable_cols].copy()
 
-# Status dropdown
+# Column configs (dropdowns)
 column_config = {}
+
+if JOB_TYPE_COL:
+    column_config[JOB_TYPE_COL] = st.column_config.SelectboxColumn(
+        "Job Type",
+        options=cfg.JOB_TYPE_OPTIONS,
+        help="Change job type",
+        required=False,
+    )
+
 if STATUS_COL:
     column_config[STATUS_COL] = st.column_config.SelectboxColumn(
         "Job Status",
