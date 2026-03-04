@@ -42,7 +42,7 @@ sub = df[df["work_date"] == selected].copy()
 # -------------------------
 ADD_PAY_RE = re.compile(
     r"(?:add[\s_-]*pay|addpay)\s*[:=]?\s*£?\s*(-?\d+(?:\.\d+)?)",
-    re.IGNORECASE
+    re.IGNORECASE,
 )
 
 def extract_add_pay(value) -> float:
@@ -85,21 +85,29 @@ total_add_pay = float(pd.to_numeric(add_pay_series, errors="coerce").fillna(0).s
 # -------------------------
 # Totals
 # -------------------------
-total_job_amount = float(pd.to_numeric(sub["amount"], errors="coerce").fillna(0).sum())
-total_wait_hours = float(pd.to_numeric(sub["waiting_hours"], errors="coerce").fillna(0).sum())
-total_wait_amount = float(pd.to_numeric(sub["waiting_amount"], errors="coerce").fillna(0).sum())
-total_expenses = float(pd.to_numeric(sub["expenses_amount"], errors="coerce").fillna(0).sum())
+total_job_amount = float(pd.to_numeric(sub.get("amount"), errors="coerce").fillna(0).sum())
+total_wait_hours = float(pd.to_numeric(sub.get("waiting_hours"), errors="coerce").fillna(0).sum())
+total_wait_amount = float(pd.to_numeric(sub.get("waiting_amount"), errors="coerce").fillna(0).sum())
+total_expenses = float(pd.to_numeric(sub.get("expenses_amount"), errors="coerce").fillna(0).sum())
 
-# Keep your existing logic (still subtract expenses), just add Add-Pay
-grand_total = total_job_amount + total_wait_amount + total_add_pay - total_expenses
+# NEW logic:
+# - Driver Pay = what you earned
+# - Expenses = reimbursed (money you fronted)
+# - Total Received = what should come back to you overall
+driver_pay = total_job_amount + total_wait_amount + total_add_pay
+total_received = driver_pay + total_expenses
 
-c1, c2, c3, c4, c5, c6 = st.columns(6)
+# -------------------------
+# Metrics
+# -------------------------
+c1, c2, c3, c4, c5, c6, c7 = st.columns(7)
 c1.metric("Job Amount", f"£{total_job_amount:,.2f}")
 c2.metric("Waiting Hours", f"{total_wait_hours:,.2f} hrs")
 c3.metric("Waiting Pay", f"£{total_wait_amount:,.2f}")
 c4.metric("Add-Pay", f"£{total_add_pay:,.2f}")
-c5.metric("Expenses", f"£{total_expenses:,.2f}")
-c6.metric("Grand Total", f"£{grand_total:,.2f}")
+c5.metric("Driver Pay", f"£{driver_pay:,.2f}")
+c6.metric("Expenses (Reimbursed)", f"£{total_expenses:,.2f}")
+c7.metric("Total Received", f"£{total_received:,.2f}")
 
 st.divider()
 
