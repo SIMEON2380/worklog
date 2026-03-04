@@ -41,7 +41,7 @@ sub = df[df["work_date"] == selected].copy()
 # Add-Pay (from comment column)
 # -------------------------
 ADD_PAY_RE = re.compile(
-    r"(?:add[\s_-]*pay|addpay)\s*[:=]?\s*£?\s*(-?\d+(?:\.\d+)?)",
+    r"(?:add[\s_-]*pay|addpay)\s*[:=]?\s*£?\s*(\d+(?:\.\d+)?)",
     re.IGNORECASE,
 )
 
@@ -53,22 +53,31 @@ def extract_add_pay(value) -> float:
       "add pay: £12.50"
       "ADD_PAY=5"
     If multiple appear, sums them.
+
+    Add-pay is always treated as extra income.
     """
     if value is None or (isinstance(value, float) and pd.isna(value)):
         return 0.0
+
     text = str(value)
     matches = ADD_PAY_RE.findall(text)
+
     if not matches:
         return 0.0
+
     total = 0.0
+
     for m in matches:
         try:
-            total += float(m)
+            total += abs(float(m))  # safety: always positive
         except ValueError:
             pass
+
     return float(total)
 
-# Find a comment column safely (won't break if it doesn't exist)
+# -------------------------
+# Find comment column safely
+# -------------------------
 comment_col = None
 for c in ["comment", "comments", "Comment", "Comments", "note", "notes", "Note", "Notes"]:
     if c in sub.columns:
@@ -90,17 +99,17 @@ total_wait_hours = float(pd.to_numeric(sub.get("waiting_hours"), errors="coerce"
 total_wait_amount = float(pd.to_numeric(sub.get("waiting_amount"), errors="coerce").fillna(0).sum())
 total_expenses = float(pd.to_numeric(sub.get("expenses_amount"), errors="coerce").fillna(0).sum())
 
-# NEW logic:
-# - Driver Pay = what you earned
-# - Expenses = reimbursed (money you fronted)
-# - Total Received = what should come back to you overall
+# Driver pay = what you earned
 driver_pay = total_job_amount + total_wait_amount + total_add_pay
+
+# Total received = earnings + reimbursed expenses
 total_received = driver_pay + total_expenses
 
 # -------------------------
 # Metrics
 # -------------------------
 c1, c2, c3, c4, c5, c6, c7 = st.columns(7)
+
 c1.metric("Job Amount", f"£{total_job_amount:,.2f}")
 c2.metric("Waiting Hours", f"{total_wait_hours:,.2f} hrs")
 c3.metric("Waiting Pay", f"£{total_wait_amount:,.2f}")
