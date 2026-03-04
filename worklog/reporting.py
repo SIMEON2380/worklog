@@ -18,23 +18,31 @@ class Totals:
 
 
 # -------------------------
-# Shared week label helper
+# Week label helper
 # -------------------------
 def format_week_range(monday: date) -> str:
-    """Return a nice Mon–Sun label for weekly dropdowns."""
     sunday = monday + timedelta(days=6)
     return f"{monday:%d %b %Y} – {sunday:%d %b %Y}"
 
 
 # -------------------------
-# Shared totals calculation
+# Month label helper
+# -------------------------
+def format_month_label(month_str: str) -> str:
+    """Convert YYYY-MM → 'Mon YYYY'"""
+    try:
+        d = pd.to_datetime(f"{month_str}-01", errors="coerce")
+        if pd.isna(d):
+            return month_str
+        return d.strftime("%b %Y")
+    except Exception:
+        return month_str
+
+
+# -------------------------
+# Totals calculation
 # -------------------------
 def compute_totals(df: pd.DataFrame) -> Totals:
-    """
-    Centralised totals used by Daily/Weekly/Monthly reports.
-    Returns a Totals dataclass so pages can use attribute access: t.total_job_amount.
-    Safe if df is empty, missing columns, or numeric strings.
-    """
 
     if df is None or df.empty:
         return Totals()
@@ -44,7 +52,6 @@ def compute_totals(df: pd.DataFrame) -> Totals:
             return pd.Series([0.0] * len(df), index=df.index, dtype="float64")
         return pd.to_numeric(df[col], errors="coerce").fillna(0.0)
 
-    # Base columns
     job_amount = num("amount")
     wait_hours = num("waiting_hours")
     add_pay = num("add_pay")
@@ -55,7 +62,6 @@ def compute_totals(df: pd.DataFrame) -> Totals:
         wait_pay = num("waiting_pay")
     else:
         from .config import Config
-
         rate = float(getattr(Config(), "WAITING_RATE", 0.0))
         wait_pay = wait_hours * rate
 
