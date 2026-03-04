@@ -6,7 +6,7 @@ from worklog.config import Config
 from worklog.db import make_db
 from worklog.auth import ensure_default_user
 from worklog.ui import require_login, display_jobs_table
-from worklog.reporting import compute_totals  # ✅ NEW
+from worklog.reporting import compute_totals, format_month_label  # ✅ UPDATED
 
 cfg = Config()
 DB = make_db(cfg)
@@ -36,9 +36,18 @@ df = df.dropna(subset=["_month"])
 all_months = sorted(df["_month"].unique().tolist(), reverse=True)
 options = [current_month] + [m for m in all_months if m != current_month]
 
-selected = st.selectbox("Select month", options, index=0)
+# ✅ Show readable month names in the dropdown
+selected = st.selectbox(
+    "Select month",
+    options,
+    index=0,
+    format_func=format_month_label,
+)
+
 sub = df[df["_month"] == selected].copy()
 sub = sub.drop(columns=["_month"], errors="ignore")
+
+st.caption(f"Showing jobs for: **{format_month_label(selected)}**")
 
 # ✅ Centralised totals (same rules as Daily/Weekly)
 t = compute_totals(sub)

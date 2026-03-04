@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import date, timedelta
 import pandas as pd
 
 
@@ -16,6 +17,18 @@ class Totals:
     total_received: float = 0.0
 
 
+# -------------------------
+# Shared week label helper
+# -------------------------
+def format_week_range(monday: date) -> str:
+    """Return a nice Mon–Sun label for weekly dropdowns."""
+    sunday = monday + timedelta(days=6)
+    return f"{monday:%d %b %Y} – {sunday:%d %b %Y}"
+
+
+# -------------------------
+# Shared totals calculation
+# -------------------------
 def compute_totals(df: pd.DataFrame) -> Totals:
     """
     Centralised totals used by Daily/Weekly/Monthly reports.
@@ -28,34 +41,34 @@ def compute_totals(df: pd.DataFrame) -> Totals:
 
     def num(col: str) -> pd.Series:
         if col not in df.columns:
-            # return a 0 series same length as df to keep math easy
             return pd.Series([0.0] * len(df), index=df.index, dtype="float64")
         return pd.to_numeric(df[col], errors="coerce").fillna(0.0)
 
-    # Match your DB column names (adjust here if your DB uses different ones)
+    # Base columns
     job_amount = num("amount")
     wait_hours = num("waiting_hours")
     add_pay = num("add_pay")
     expenses = num("expenses_amount")
-    received = num("total_received")  # if you store this; otherwise we compute it below
 
-    # Waiting pay: if you store it, use it; else compute from cfg.WAITING_RATE elsewhere.
-    wait_pay = num("waiting_pay")
+    # Waiting pay
+    if "waiting_pay" in df.columns:
+        wait_pay = num("waiting_pay")
+    else:
+        from .config import Config
 
-    # If your DB does NOT store waiting_pay, compute it from hours * rate if a rate column exists.
-    # (We won't import Config here to avoid circular imports.)
-    if "waiting_pay" not in df.columns:
-        # fallback: if you stored a per-hour rate in 'waiting_rate' use it, else assume 0
-        rate = num("waiting_rate")
+        rate = float(getattr(Config(), "WAITING_RATE", 0.0))
         wait_pay = wait_hours * rate
 
-    # Driver pay: if stored use it; else (job_amount + wait_pay + add_pay - expenses) is a reasonable fallback
-    driver_pay = num("driver_pay")
-    if "driver_pay" not in df.columns:
+    # Driver pay
+    if "driver_pay" in df.columns:
+        driver_pay = num("driver_pay")
+    else:
         driver_pay = (job_amount + wait_pay + add_pay) - expenses
 
-    # Total received: if not stored, compute it (job_amount + add_pay + wait_pay - expenses)
-    if "total_received" not in df.columns:
+    # Total received
+    if "total_received" in df.columns:
+        received = num("total_received")
+    else:
         received = (job_amount + add_pay + wait_pay) - expenses
 
     return Totals(
