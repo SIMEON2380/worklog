@@ -46,11 +46,11 @@ def compute_totals(df: pd.DataFrame) -> Totals:
     """
     Centralised totals used by Daily/Weekly/Monthly reports.
 
-    Key improvement:
-    - Supports both DB-style column names (amount, add_pay, expenses_amount, waiting_hours)
-      and UI/export-style names (job amount, Add-Pay, expenses Amount, waiting time, etc.)
-    - Cleans currency/text values safely (£, commas, whitespace)
-    - Can parse waiting time ranges like "10:30-11:30" into hours if waiting_hours not present
+    Key behaviour:
+    - Handles numeric values stored as strings (e.g. "£60", "1,200")
+    - Supports UI/export aliases for common columns
+    - If add_pay column is missing, tries to extract Add-Pay from comment fields
+      (e.g. "Add-pay 60", "add pay £60", "AddPay: 60")
     """
 
     if df is None or df.empty:
@@ -72,25 +72,20 @@ def compute_totals(df: pd.DataFrame) -> Totals:
         return pd.to_numeric(s, errors="coerce").fillna(0.0)
 
     def num_any(*candidates: str) -> pd.Series:
-        """Return numeric series for the first matching column name among candidates."""
+        """Return numeric series for first matching column name among candidates."""
         for col in candidates:
             if col in df.columns:
                 return _clean_numeric(df[col])
         return _zero()
 
     def waiting_hours_series() -> pd.Series:
-        """
-        Prefer a numeric waiting_hours column.
-        If missing, try parsing 'waiting time' like '10:30-11:30' into hours.
-        """
+        """Prefer numeric waiting_hours; else parse waiting time like '10:30-11:30'."""
         if "waiting_hours" in df.columns:
             return _clean_numeric(df["waiting_hours"])
 
-        # UI/export variants
-        for col in ("waiting time", "Waiting time", "Waiting Time", "waiting_time"):
+        for col in ("waiting time", "waiting_time", "Waiting time", "Waiting Time"):
             if col in df.columns:
                 s = df[col].astype(str).fillna("").str.strip()
-
                 parts = s.str.split("-", n=1, expand=True)
                 if parts.shape[1] < 2:
                     return _zero()
@@ -100,18 +95,19 @@ def compute_totals(df: pd.DataFrame) -> Totals:
 
                 hours = (end - start).dt.total_seconds() / 3600.0
                 hours = hours.fillna(0.0)
-                hours = hours.where(hours >= 0, 0.0)  # avoid negatives if format is bad
+                hours = hours.where(hours >= 0, 0.0)
                 return hours.astype("float64")
 
         return _zero()
 
-    # ---- pull values with aliases (DB + UI) ----
+    # --- Base numeric fields (DB + UI/export aliases) ---
     job_amount = num_any("amount", "job amount", "Job Amount")
-    add_pay = num_any("add_pay", "Add-Pay", "add-pay", "add pay", "Add Pay", "additional_pay", "Additional Pay")
     expenses = num_any("expenses_amount", "expenses Amount", "Expenses Amount", "expenses amount")
+
+    # Waiting
     wait_hours = waiting_hours_series()
 
-    # Waiting pay: use stored waiting_pay if present, else compute using Config.WAITING_RATE
+    # Waiting pay: stored or computed
     if any(c in df.columns for c in ("waiting_pay", "Waiting Pay", "waiting pay")):
         wait_pay = num_any("waiting_pay", "Waiting Pay", "waiting pay")
     else:
@@ -120,13 +116,38 @@ def compute_totals(df: pd.DataFrame) -> Totals:
         rate = float(getattr(Config(), "WAITING_RATE", 0.0))
         wait_pay = wait_hours * rate
 
-    # Driver pay: use stored driver_pay if present, else compute
+    # Add-Pay: stored column OR extracted from comments
+    if any(c in df.columns for c in ("add_pay", "Add-Pay", "add-pay", "add pay", "Add Pay")):
+        add_pay = num_any("add_pay", "Add-Pay", "add-pay", "add pay", "Add Pay")
+    else:
+        # Try extracting from comment-like fields
+        comment_col = None
+        for c in ("comment", "comments", "Comment", "Comments", "notes", "Notes", "description", "Description"):
+            if c in df.columns:
+                comment_col = c
+                break
+
+        if comment_col is None:
+            add_pay = _zero()
+        else:
+            text = df[comment_col].astype(str).fillna("").str.lower()
+
+            # Extract a number after patterns like:
+            # "add pay 60", "add-pay £60", "addpay: 60.50"
+            extracted = text.str.extract(
+                r"add[\s\-]*pay[^0-9]*([0-9]+(?:\.[0-9]+)?)",
+                expand=False,
+            )
+
+            add_pay = pd.to_numeric(extracted, errors="coerce").fillna(0.0)
+
+    # Driver pay: stored or computed
     if any(c in df.columns for c in ("driver_pay", "Driver Pay", "driver pay")):
         driver_pay = num_any("driver_pay", "Driver Pay", "driver pay")
     else:
         driver_pay = (job_amount + wait_pay + add_pay) - expenses
 
-    # Total received: use stored total_received if present, else compute
+    # Total received: stored or computed
     if any(c in df.columns for c in ("total_received", "Total Received", "total received")):
         received = num_any("total_received", "Total Received", "total received")
     else:
