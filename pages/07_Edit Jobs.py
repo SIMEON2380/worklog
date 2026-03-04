@@ -27,56 +27,100 @@ if "id" not in df.columns:
     st.error("Missing 'id' column in dataset. Cannot safely save edits.")
     st.stop()
 
-# Optional filters (safe even if columns missing)
+# --- Choose the status column to edit ---
+# Your DB has BOTH 'job_status' and 'status'. The proper one is 'job_status'.
+STATUS_COL = "job_status" if "job_status" in df.columns else ("status" if "status" in df.columns else None)
+
+# Optional filters
 c1, c2, c3 = st.columns(3)
 
 job_id_filter = c1.text_input("Filter by Job Number (optional)") if "job_id" in df.columns else ""
-status_filter = c2.selectbox("Filter by Status (optional)", ["All"] + sorted(df["status"].dropna().astype(str).unique().tolist())) if "status" in df.columns else "All"
 
+status_filter = "All"
+if STATUS_COL:
+    existing_statuses = (
+        df[STATUS_COL].dropna().astype(str).unique().tolist()
+        if not df[STATUS_COL].dropna().empty
+        else []
+    )
+    status_options = ["All"] + list(dict.fromkeys(cfg.STATUS_OPTIONS + sorted(existing_statuses)))
+    status_filter = c2.selectbox("Filter by Status (optional)", status_options)
+else:
+    c2.info("No status column found.")
+
+date_range = None
 if "work_date" in df.columns:
     df["work_date"] = pd.to_datetime(df["work_date"], errors="coerce").dt.date
     min_d = df["work_date"].dropna().min()
     max_d = df["work_date"].dropna().max()
-    date_range = c3.date_input("Filter by Date Range (optional)", value=(min_d, max_d))
+    if pd.notna(min_d) and pd.notna(max_d):
+        date_range = c3.date_input("Filter by Date Range (optional)", value=(min_d, max_d))
 else:
-    date_range = None
+    c3.info("No work_date column found.")
 
 filtered = df.copy()
 
 if job_id_filter and "job_id" in filtered.columns:
     filtered = filtered[filtered["job_id"].astype(str).str.contains(job_id_filter.strip(), na=False)]
 
-if status_filter != "All" and "status" in filtered.columns:
-    filtered = filtered[filtered["status"].astype(str) == status_filter]
+if status_filter != "All" and STATUS_COL and STATUS_COL in filtered.columns:
+    filtered = filtered[filtered[STATUS_COL].astype(str) == status_filter]
 
-if date_range and "work_date" in filtered.columns and isinstance(date_range, tuple) and len(date_range) == 2:
+if (
+    date_range
+    and "work_date" in filtered.columns
+    and isinstance(date_range, tuple)
+    and len(date_range) == 2
+):
     start, end = date_range
     filtered = filtered[(filtered["work_date"] >= start) & (filtered["work_date"] <= end)]
 
 st.caption("Edit values in the table, then click **Save changes**.")
 
-# Choose which columns are editable (keep this tight to avoid messing up schema)
+# Editable columns (keep tight)
 editable_cols = []
-for col in ["status", "amount", "waiting_hours", "waiting_amount", "expenses_amount", "comment", "comments", "note", "notes"]:
+
+# status first
+if STATUS_COL and STATUS_COL in filtered.columns:
+    editable_cols.append(STATUS_COL)
+
+# other columns that actually exist in your schema
+for col in [
+    "amount",
+    "waiting_hours",
+    "waiting_amount",
+    "expenses_amount",
+    "comments",  # ✅ your DB column is 'comments'
+]:
     if col in filtered.columns:
         editable_cols.append(col)
 
 if not editable_cols:
-    st.warning("No editable columns found (expected columns like status/amount/etc).")
-    st.dataframe(filtered)
+    st.warning("No editable columns found.")
+    st.dataframe(filtered, use_container_width=True)
     st.stop()
 
-# Build editor view: keep id visible (or hide if you want, but we NEED it present)
 editor_df = filtered[["id"] + editable_cols].copy()
+
+# Status dropdown
+column_config = {}
+if STATUS_COL:
+    column_config[STATUS_COL] = st.column_config.SelectboxColumn(
+        "Job Status",
+        options=cfg.STATUS_OPTIONS,
+        help="Change job status",
+        required=False,
+    )
 
 edited = st.data_editor(
     editor_df,
     use_container_width=True,
     num_rows="fixed",
     key="edit_jobs_editor",
+    column_config=column_config if column_config else None,
 )
 
-# Save button
+# Save changes
 if st.button("Save changes", type="primary"):
     original = editor_df.set_index("id")
     updated = edited.set_index("id")
@@ -95,7 +139,18 @@ if st.button("Save changes", type="primary"):
             if (pd.isna(old) and pd.isna(new)) or old == new:
                 continue
 
+            # Normalize blanks in status
+            if col == STATUS_COL:
+                if new is None or (isinstance(new, str) and not new.strip()):
+                    new = "Start"
+
             diffs[col] = None if (isinstance(new, float) and pd.isna(new)) else new
+
+            # ✅ Keep both columns in sync if both exist
+            if col == "job_status" and "status" in df.columns:
+                diffs["status"] = new
+            if col == "status" and "job_status" in df.columns:
+                diffs["job_status"] = new
 
         if diffs:
             DB["update_row"](int(row_id), diffs)

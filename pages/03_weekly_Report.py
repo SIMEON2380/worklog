@@ -6,7 +6,7 @@ from worklog.config import Config
 from worklog.db import make_db
 from worklog.auth import ensure_default_user
 from worklog.ui import require_login, display_jobs_table
-from worklog.reporting import compute_totals  # ✅ NEW
+from worklog.reporting import compute_totals, format_week_range  # ✅ UPDATED
 
 cfg = Config()
 DB = make_db(cfg)
@@ -21,7 +21,7 @@ st.subheader("Weekly Report")
 
 df = DB["read_all"]()
 today = date.today()
-current_week_start = today - timedelta(days=today.weekday())
+current_week_start = today - timedelta(days=today.weekday())  # Monday
 
 if df.empty:
     st.info("No jobs found.")
@@ -32,14 +32,25 @@ df = df.copy()
 df["work_date"] = pd.to_datetime(df["work_date"], errors="coerce").dt.date
 df = df.dropna(subset=["work_date"])
 
+# Week start (Monday) for each row
 df["_week_start"] = df["work_date"].apply(lambda d: d - timedelta(days=d.weekday()))
 
 all_weeks = sorted(df["_week_start"].unique().tolist(), reverse=True)
 options = [current_week_start] + [w for w in all_weeks if w != current_week_start]
 
-selected = st.selectbox("Select week (Mon–Sun)", options, index=0)
+# ✅ Show readable week ranges in the dropdown
+selected = st.selectbox(
+    "Select week (Mon–Sun)",
+    options,
+    index=0,
+    format_func=format_week_range,
+)
+
 sub = df[df["_week_start"] == selected].copy()
 sub = sub.drop(columns=["_week_start"], errors="ignore")
+
+# Nice label under the selector too (so it's obvious what you're viewing)
+st.caption(f"Showing jobs for: **{format_week_range(selected)}**")
 
 # ✅ Centralised totals (same rules as Daily/Monthly)
 t = compute_totals(sub)
