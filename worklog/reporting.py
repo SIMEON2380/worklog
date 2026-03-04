@@ -48,9 +48,23 @@ def compute_totals(df: pd.DataFrame) -> Totals:
         return Totals()
 
     def num(col: str) -> pd.Series:
+        """Coerce numbers safely, handling '£', commas, and other text noise."""
         if col not in df.columns:
             return pd.Series([0.0] * len(df), index=df.index, dtype="float64")
-        return pd.to_numeric(df[col], errors="coerce").fillna(0.0)
+
+        s = df[col]
+
+        # Clean common money/text formats: "£60.00", "1,200", " 60 ", etc.
+        if s.dtype == "object":
+            s = (
+                s.astype(str)
+                .str.strip()
+                .str.replace(",", "", regex=False)
+                .str.replace("£", "", regex=False)
+                .str.replace(r"[^\d\.\-]", "", regex=True)  # keep digits, dot, minus
+            )
+
+        return pd.to_numeric(s, errors="coerce").fillna(0.0)
 
     job_amount = num("amount")
     wait_hours = num("waiting_hours")
@@ -62,6 +76,7 @@ def compute_totals(df: pd.DataFrame) -> Totals:
         wait_pay = num("waiting_pay")
     else:
         from .config import Config
+
         rate = float(getattr(Config(), "WAITING_RATE", 0.0))
         wait_pay = wait_hours * rate
 
