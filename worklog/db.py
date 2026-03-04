@@ -556,6 +556,42 @@ def make_db(cfg: Config):
             conn.execute(f"DELETE FROM {CFG.TABLE_NAME} WHERE id = ?", (int(row_id),))
             conn.commit()
 
+    # =========================
+    # NEW: Partial updater used by Edit Jobs page
+    # =========================
+    def update_row(row_id: int, updates: Dict[str, Any]) -> None:
+        """
+        Update a single row by id with a dict of {column: value}.
+        - Ignores empty updates
+        - Blocks updating 'id'
+        - Only updates columns that exist in the table (prevents SQL errors)
+        """
+        if not updates:
+            return
+
+        rid = int(row_id)
+
+        # never allow id changes
+        updates = dict(updates)
+        updates.pop("id", None)
+
+        with get_conn() as conn:
+            cols = table_columns(conn, CFG.TABLE_NAME)
+            safe_updates: Dict[str, Any] = {k: v for k, v in updates.items() if k in cols}
+
+            if not safe_updates:
+                return
+
+            keys = list(safe_updates.keys())
+            set_clause = ", ".join([f"{k} = ?" for k in keys])
+            values = [safe_updates[k] for k in keys]
+
+            conn.execute(
+                f"UPDATE {CFG.TABLE_NAME} SET {set_clause} WHERE id = ?",
+                (*values, rid),
+            )
+            conn.commit()
+
     # Insert many, dedupe, reporting helpers stay in ui.py (so db.py doesn’t get even bigger).
     # But we still expose the key pieces used everywhere.
     return {
@@ -575,4 +611,6 @@ def make_db(cfg: Config):
         "insert_row": insert_row,
         "update_row_by_id": update_row_by_id,
         "delete_row_by_id": delete_row_by_id,
+        # NEW export for Edit Jobs page:
+        "update_row": update_row,
     }
