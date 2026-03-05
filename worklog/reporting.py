@@ -1,3 +1,4 @@
+# worklog/reporting.py
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -50,22 +51,18 @@ def _num(series: pd.Series) -> pd.Series:
 
 def compute_totals(
     df: pd.DataFrame,
-    waiting_rate: float = 7.5,  # ✅ default keeps old pages working + matches your config history
-    inspect_collect_rate: float = 8.0,  # ✅ safe default from your earlier config
+    waiting_rate: float = 7.5,          # default keeps old pages working
+    inspect_collect_rate: float = 8.0,  # safe default
     inspect_collect_types: Optional[Union[Iterable[str], set[str]]] = None,
 ) -> Totals:
     """
     Central totals used by Daily/Weekly/Monthly.
 
-    Backwards compatible:
-      - compute_totals(df) works (waiting_rate defaulted)
-      - compute_totals(df, waiting_rate=cfg.WAITING_RATE) also works
-
     Logic:
       - total_job_amount: sum(amount)
       - total_wait_hours: sum(waiting_hours)
       - total_wait_amount: sum(waiting_amount) if present else waiting_hours * waiting_rate
-      - total_add_pay: for Inspect & Collect jobs only: hours * inspect_collect_rate
+      - total_add_pay: (NEW) sum(add_pay) + (legacy) Inspect & Collect auto-pay (hours * inspect_collect_rate)
       - driver_pay: job_amount + wait_amount + add_pay
       - total_received: driver_pay + expenses_amount (treated as reimbursed)
     """
@@ -83,59 +80,47 @@ def compute_totals(
     d = df.copy()
 
     # Coerce numeric columns safely
-    if "amount" in d.columns:
-        d["amount"] = _num(d["amount"])
-    else:
-        d["amount"] = 0.0
+    d["amount"] = _num(d["amount"]) if "amount" in d.columns else 0.0
+    d["waiting_hours"] = _num(d["waiting_hours"]) if "waiting_hours" in d.columns else 0.0
+    d["waiting_amount"] = _num(d["waiting_amount"]) if "waiting_amount" in d.columns else pd.Series([0.0] * len(d), index=d.index)
+    d["expenses_amount"] = _num(d["expenses_amount"]) if "expenses_amount" in d.columns else 0.0
+    d["hours"] = _num(d["hours"]) if "hours" in d.columns else 0.0
 
-    if "waiting_hours" in d.columns:
-        d["waiting_hours"] = _num(d["waiting_hours"])
-    else:
-        d["waiting_hours"] = 0.0
-
-    if "waiting_amount" in d.columns:
-        d["waiting_amount"] = _num(d["waiting_amount"])
-    else:
-        d["waiting_amount"] = pd.Series([0.0] * len(d), index=d.index)
-
-    if "expenses_amount" in d.columns:
-        d["expenses_amount"] = _num(d["expenses_amount"])
-    else:
-        d["expenses_amount"] = 0.0
-
-    if "hours" in d.columns:
-        d["hours"] = _num(d["hours"])
-    else:
-        d["hours"] = 0.0
+    # NEW: add_pay column (REAL DEFAULT 0)
+    d["add_pay"] = _num(d["add_pay"]) if "add_pay" in d.columns else 0.0
 
     # Totals
-    total_job_amount = float(d["amount"].sum())
-    total_wait_hours = float(d["waiting_hours"].sum())
+    total_job_amount = float(pd.to_numeric(d["amount"], errors="coerce").fillna(0).sum())
+    total_wait_hours = float(pd.to_numeric(d["waiting_hours"], errors="coerce").fillna(0).sum())
 
     # Waiting pay: prefer stored waiting_amount; if missing/zero for rows, compute from hours
     wr = float(waiting_rate or 0.0)
     if "waiting_amount" in df.columns:
-        # fill missing/0 with computed waiting pay (helps legacy rows)
         computed_wait = d["waiting_hours"] * wr
         d["waiting_amount"] = d["waiting_amount"].where(d["waiting_amount"] != 0, computed_wait)
         total_wait_amount = float(d["waiting_amount"].sum())
     else:
         total_wait_amount = float((d["waiting_hours"] * wr).sum())
 
-    # Add-pay (Inspect & Collect base)
-    # If you pass cfg.INSPECT_COLLECT_TYPES later, this will be exact.
+    # NEW: manual add pay from column
+    total_add_pay_manual = float(d["add_pay"].sum())
+
+    # Legacy: Inspect & Collect auto add-pay (kept for backwards compatibility)
     default_types = {"Inspect and Collect", "Inspect and Collect 2"}
     types = set(inspect_collect_types) if inspect_collect_types else default_types
 
-    total_add_pay = 0.0
+    total_add_pay_auto = 0.0
     if "category" in d.columns and types and inspect_collect_rate:
         mask = d["category"].astype(str).isin([str(x) for x in types])
-        total_add_pay = float((d.loc[mask, "hours"] * float(inspect_collect_rate)).sum())
+        total_add_pay_auto = float((d.loc[mask, "hours"] * float(inspect_collect_rate)).sum())
+
+    # Combine (so old Inspect&Collect still works + new Add Pay column works everywhere)
+    total_add_pay = float(total_add_pay_manual + total_add_pay_auto)
 
     # Driver pay and received
     driver_pay = total_job_amount + total_wait_amount + total_add_pay
     total_expenses = float(d["expenses_amount"].sum())
-    total_received = driver_pay + total_expenses  # reimbursed expenses included in received
+    total_received = driver_pay + total_expenses
 
     return Totals(
         total_job_amount=total_job_amount,
