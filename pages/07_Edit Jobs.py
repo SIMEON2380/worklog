@@ -188,7 +188,20 @@ with st.form("edit_job_form"):
         disabled=True,
     )
 
-    hours = col15.number_input(
+    # Add Pay input (NEW column in DB)
+    # Shows only if DB has the column; otherwise keep UI stable (no crash)
+    add_pay_value = float(job.get("add_pay") or 0.0) if "add_pay" in df.columns else 0.0
+    add_pay = col15.number_input(
+        "Add Pay (£)",
+        min_value=0.0,
+        step=1.0,
+        value=add_pay_value,
+        disabled=("add_pay" not in df.columns),
+        help=None if "add_pay" in df.columns else "DB column add_pay not found. Run ALTER TABLE to add it.",
+    )
+
+    # Keep Hours (if used) on its own line (so layout stays clean)
+    hours = st.number_input(
         "Hours (if used)",
         min_value=0.0,
         step=0.5,
@@ -238,6 +251,10 @@ with st.form("edit_job_form"):
         set_if_changed("waiting_time", waiting_time.strip() if waiting_time else None)
         set_if_changed("waiting_hours", float(calc_waiting_hours))
         set_if_changed("waiting_amount", float(calc_waiting_amount))
+
+        # Save Add Pay if column exists
+        if "add_pay" in df.columns:
+            set_if_changed("add_pay", float(add_pay))
 
         set_if_changed("hours", float(hours))
 

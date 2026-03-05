@@ -6,7 +6,7 @@ from worklog.config import Config
 from worklog.db import make_db
 from worklog.auth import ensure_default_user
 from worklog.ui import require_login, display_jobs_table
-from worklog.reporting import compute_totals, format_week_range  # ✅ UPDATED
+from worklog.reporting import compute_totals, format_week_range  # ✅ central reporting
 
 cfg = Config()
 DB = make_db(cfg)
@@ -29,6 +29,8 @@ if df.empty:
     st.stop()
 
 df = df.copy()
+
+# Ensure dates are real dates
 df["work_date"] = pd.to_datetime(df["work_date"], errors="coerce").dt.date
 df = df.dropna(subset=["work_date"])
 
@@ -38,7 +40,6 @@ df["_week_start"] = df["work_date"].apply(lambda d: d - timedelta(days=d.weekday
 all_weeks = sorted(df["_week_start"].unique().tolist(), reverse=True)
 options = [current_week_start] + [w for w in all_weeks if w != current_week_start]
 
-# ✅ Show readable week ranges in the dropdown
 selected = st.selectbox(
     "Select week (Mon–Sun)",
     options,
@@ -49,8 +50,14 @@ selected = st.selectbox(
 sub = df[df["_week_start"] == selected].copy()
 sub = sub.drop(columns=["_week_start"], errors="ignore")
 
-# Nice label under the selector too (so it's obvious what you're viewing)
 st.caption(f"Showing jobs for: **{format_week_range(selected)}**")
+
+# ✅ IMPORTANT FIX:
+# Force numeric columns to numeric BEFORE reporting totals.
+# This prevents totals silently not changing due to dtype issues (strings/None/NaN).
+for col in ["amount", "waiting_hours", "waiting_amount", "expenses_amount", "hours"]:
+    if col in sub.columns:
+        sub[col] = pd.to_numeric(sub[col], errors="coerce").fillna(0.0)
 
 # ✅ Centralised totals (same rules as Daily/Monthly)
 t = compute_totals(sub)

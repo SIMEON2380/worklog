@@ -1,66 +1,33 @@
-import streamlit as st
 import pandas as pd
-from datetime import date
 
-from worklog.config import Config
-from worklog.db import make_db
-from worklog.auth import ensure_default_user
-from worklog.ui import require_login, display_jobs_table
-from worklog.reporting import compute_totals, format_month_label  # ✅ UPDATED
+def compute_totals(df):
+    sub = df.copy()
 
-cfg = Config()
-DB = make_db(cfg)
+    # Ensure numeric columns are numeric
+    for col in ["amount", "waiting_hours", "waiting_amount", "expenses_amount", "hours"]:
+        if col in sub.columns:
+            sub[col] = pd.to_numeric(sub[col], errors="coerce").fillna(0.0)
 
-st.set_page_config(page_title=f"{cfg.APP_TITLE} - Monthly Report", layout="wide")
+    total_job_amount = float(sub["amount"].sum()) if "amount" in sub.columns else 0.0
+    total_wait_hours = float(sub["waiting_hours"].sum()) if "waiting_hours" in sub.columns else 0.0
+    total_wait_amount = float(sub["waiting_amount"].sum()) if "waiting_amount" in sub.columns else 0.0
+    total_expenses = float(sub["expenses_amount"].sum()) if "expenses_amount" in sub.columns else 0.0
 
-DB["ensure_schema"]()
-ensure_default_user(cfg)
-require_login()
+    # Example extra calculations (keep if you already use them)
+    total_add_pay = 0.0
+    driver_pay = total_job_amount + total_wait_amount
+    total_received = driver_pay - total_expenses
 
-st.subheader("Monthly Report")
-
-df = DB["read_all"]()
-today = date.today()
-current_month = today.strftime("%Y-%m")
-
-if df.empty:
-    st.info("No jobs found.")
-    st.write(f"Month: {current_month}")
-    st.stop()
-
-df = df.copy()
-dt = pd.to_datetime(df["work_date"], errors="coerce")
-df["_month"] = dt.dt.to_period("M").astype(str)
-df = df.dropna(subset=["_month"])
-
-all_months = sorted(df["_month"].unique().tolist(), reverse=True)
-options = [current_month] + [m for m in all_months if m != current_month]
-
-# ✅ Show readable month names in the dropdown
-selected = st.selectbox(
-    "Select month",
-    options,
-    index=0,
-    format_func=format_month_label,
-)
-
-sub = df[df["_month"] == selected].copy()
-sub = sub.drop(columns=["_month"], errors="ignore")
-
-st.caption(f"Showing jobs for: **{format_month_label(selected)}**")
-
-# ✅ Centralised totals (same rules as Daily/Weekly)
-t = compute_totals(sub)
-
-c1, c2, c3, c4, c5, c6, c7 = st.columns(7)
-c1.metric("Job Amount", f"£{t.total_job_amount:,.2f}")
-c2.metric("Waiting Hours", f"{t.total_wait_hours:,.2f} hrs")
-c3.metric("Waiting Pay", f"£{t.total_wait_amount:,.2f}")
-c4.metric("Add-Pay", f"£{t.total_add_pay:,.2f}")
-c5.metric("Driver Pay", f"£{t.driver_pay:,.2f}")
-c6.metric("Expenses (Reimbursed)", f"£{t.total_expenses:,.2f}")
-c7.metric("Total Received", f"£{t.total_received:,.2f}")
-
-st.divider()
-
-display_jobs_table(cfg, sub, caption="Jobs in selected month")
+    return type(
+        "Totals",
+        (),
+        {
+            "total_job_amount": total_job_amount,
+            "total_wait_hours": total_wait_hours,
+            "total_wait_amount": total_wait_amount,
+            "total_add_pay": total_add_pay,
+            "driver_pay": driver_pay,
+            "total_expenses": total_expenses,
+            "total_received": total_received,
+        },
+    )()

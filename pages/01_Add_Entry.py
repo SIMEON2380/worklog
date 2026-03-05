@@ -1,5 +1,6 @@
 import streamlit as st
 from datetime import date
+import pandas as pd
 
 from worklog.config import Config
 from worklog.db import make_db
@@ -17,8 +18,43 @@ require_login()
 
 st.subheader("Add New Job")
 
-with st.form("add_job_form"):
+# -------------------------
+# Helpers
+# -------------------------
+def parse_wait_range_to_hours(s: str) -> float:
+    """
+    Accepts:
+      "10-11" -> 1.0
+      "10:30-12:00" -> 1.5
+      "10 - 11" -> 1.0
+    Returns 0.0 if invalid.
+    """
+    if not s:
+        return 0.0
 
+    s = str(s).strip().replace(" ", "")
+    if "-" not in s:
+        return 0.0
+
+    start, end = s.split("-", 1)
+
+    def to_minutes(t: str) -> int:
+        if ":" in t:
+            hh, mm = t.split(":", 1)
+            return int(hh) * 60 + int(mm)
+        return int(t) * 60
+
+    try:
+        a = to_minutes(start)
+        b = to_minutes(end)
+        if b <= a:
+            return 0.0
+        return (b - a) / 60.0
+    except Exception:
+        return 0.0
+
+
+with st.form("add_job_form"):
     col1, col2, col3 = st.columns(3)
 
     work_date = col1.date_input("Date", value=date.today())
@@ -26,27 +62,48 @@ with st.form("add_job_form"):
     job_type = col3.selectbox("Job Type", cfg.JOB_TYPE_OPTIONS)
 
     col4, col5, col6 = st.columns(3)
-
     vehicle_description = col4.text_input("Vehicle Description")
     vehicle_reg = col5.text_input("Vehicle Reg")
     job_status = col6.selectbox("Job Status", cfg.STATUS_OPTIONS)
 
     col7, col8, col9 = st.columns(3)
-
     collection_from = col7.text_input("Collection From")
     delivery_to = col8.text_input("Delivery To")
     job_amount = col9.number_input("Job Amount (£)", min_value=0.0, step=1.0)
 
     col10, col11, col12 = st.columns(3)
-
     job_expenses = col10.selectbox("Job Expenses", cfg.JOB_EXPENSE_OPTIONS)
     expenses_amount = col11.number_input("Expenses Amount (£)", min_value=0.0, step=0.5)
-    waiting_time = col12.text_input("Waiting Time (e.g. 09:00-11:30)")
+
+    waiting_time = col12.text_input("Waiting Time (e.g. 10-11 or 09:00-11:30)")
+
+    # Auto-calc waiting from waiting_time (keeps reports consistent)
+    calc_waiting_hours = float(parse_wait_range_to_hours(waiting_time))
+    calc_waiting_amount = float(calc_waiting_hours) * float(getattr(cfg, "WAITING_RATE", 0.0))
+
+    col13, col14, col15 = st.columns(3)
+    waiting_hours = col13.number_input(
+        "Waiting Hours (auto)",
+        min_value=0.0,
+        step=0.5,
+        value=float(calc_waiting_hours),
+        disabled=True,
+    )
+    waiting_amount = col14.number_input(
+        "Waiting Amount (£) (auto)",
+        min_value=0.0,
+        step=0.5,
+        value=float(calc_waiting_amount),
+        disabled=True,
+    )
+
+    # NEW: Add Pay column
+    add_pay = col15.number_input("Add Pay (£)", min_value=0.0, step=1.0, value=0.0)
 
     auth_code = st.text_input("Auth Code")
     comments = st.text_area("Comments")
 
-    submitted = st.form_submit_button("Save Job")
+    submitted = st.form_submit_button("Save Job", type="primary")
 
     if submitted:
         DB["insert_row"](
@@ -58,13 +115,16 @@ with st.form("add_job_form"):
                 "vehicle_reg": vehicle_reg.strip() if vehicle_reg else None,
                 "collection_from": collection_from.strip() if collection_from else None,
                 "delivery_to": delivery_to.strip() if delivery_to else None,
-                "amount": float(job_amount) if job_amount is not None else None,
+                "amount": float(job_amount) if job_amount is not None else 0.0,
                 "job_expenses": job_expenses,
-                "expenses_amount": float(expenses_amount) if expenses_amount is not None else None,
+                "expenses_amount": float(expenses_amount) if expenses_amount is not None else 0.0,
                 "auth_code": auth_code.strip() if auth_code else None,
                 "job_status": job_status,
                 "status": job_status,  # keep both columns aligned (your schema has both)
                 "waiting_time": waiting_time.strip() if waiting_time else None,
+                "waiting_hours": float(calc_waiting_hours),
+                "waiting_amount": float(calc_waiting_amount),
+                "add_pay": float(add_pay),
                 "comments": comments.strip() if comments else None,
             }
         )
