@@ -49,22 +49,24 @@ with st.form("add_job_form"):
     submitted = st.form_submit_button("Save Job")
 
     if submitted:
-
         DB["insert_row"](
-            work_date,
-            job_number,
-            job_type,
-            vehicle_description,
-            vehicle_reg,
-            collection_from,
-            delivery_to,
-            job_amount,
-            job_expenses,
-            expenses_amount,
-            auth_code,
-            job_status,
-            waiting_time,
-            comments,
+            {
+                "work_date": work_date.isoformat() if work_date else None,
+                "job_id": job_number.strip() if job_number else None,
+                "category": job_type,
+                "vehicle_description": vehicle_description.strip() if vehicle_description else None,
+                "vehicle_reg": vehicle_reg.strip() if vehicle_reg else None,
+                "collection_from": collection_from.strip() if collection_from else None,
+                "delivery_to": delivery_to.strip() if delivery_to else None,
+                "amount": float(job_amount) if job_amount is not None else None,
+                "job_expenses": job_expenses,
+                "expenses_amount": float(expenses_amount) if expenses_amount is not None else None,
+                "auth_code": auth_code.strip() if auth_code else None,
+                "job_status": job_status,
+                "status": job_status,  # keep both columns aligned (your schema has both)
+                "waiting_time": waiting_time.strip() if waiting_time else None,
+                "comments": comments.strip() if comments else None,
+            }
         )
 
         st.success("Job saved successfully.")
