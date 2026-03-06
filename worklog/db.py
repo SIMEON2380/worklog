@@ -15,7 +15,6 @@ def make_db(cfg):
         return conn
 
     def get_columns(cur: sqlite3.Cursor) -> set[str]:
-        # PRAGMA table_info returns rows with keys: cid, name, type, notnull, dflt_value, pk
         rows = cur.execute(f"PRAGMA table_info({TABLE})").fetchall()
         return {r["name"] for r in rows}
 
@@ -76,12 +75,6 @@ def make_db(cfg):
     # Insert row
     # -------------------------
     def insert_row(data: Dict[str, Any]) -> Optional[int]:
-        """
-        Inserts one row into TABLE.
-        - Filters incoming data to real DB columns
-        - Adds created_at/updated_at if present and missing
-        Returns the new row id (or None if nothing inserted).
-        """
         if not data or not isinstance(data, dict):
             return None
 
@@ -90,10 +83,8 @@ def make_db(cfg):
 
         cols = get_columns(cur)
 
-        # Only allow real columns (never allow setting id manually)
         safe = {k: v for k, v in data.items() if k in cols and k != "id"}
 
-        # Auto timestamps if supported
         now = datetime.utcnow().isoformat()
         if "created_at" in cols and "created_at" not in safe:
             safe["created_at"] = now
@@ -128,14 +119,12 @@ def make_db(cfg):
 
         cols = get_columns(cur)
 
-        # Only allow real columns (never allow changing id)
         safe = {k: v for k, v in diffs.items() if k in cols and k != "id"}
 
         if not safe:
             conn.close()
             return
 
-        # update timestamp
         if "updated_at" in cols:
             safe["updated_at"] = datetime.utcnow().isoformat()
 
@@ -148,6 +137,16 @@ def make_db(cfg):
         conn.close()
 
     # -------------------------
+    # Delete row
+    # -------------------------
+    def delete_row(row_id: int) -> None:
+        conn = get_conn()
+        cur = conn.cursor()
+        cur.execute(f"DELETE FROM {TABLE} WHERE id=?", (row_id,))
+        conn.commit()
+        conn.close()
+
+    # -------------------------
     # DB API
     # -------------------------
     return {
@@ -155,4 +154,5 @@ def make_db(cfg):
         "read_all": read_all,
         "insert_row": insert_row,
         "update_row": update_row,
+        "delete_row": delete_row,
     }
