@@ -1,55 +1,48 @@
+import streamlit as st
 import pandas as pd
-from dataclasses import dataclass
+from datetime import date
 
-@dataclass
-class Totals:
-    total_job_amount: float
-    total_wait_hours: float
-    total_wait_amount: float
-    total_add_pay: float
-    driver_pay: float
-    total_expenses: float
-    total_received: float
+from worklog.config import Config
+from worklog.db import make_db
+from worklog.auth import ensure_default_user
+from worklog.ui import require_login, display_jobs_table
 
+cfg = Config()
+DB = make_db(cfg)
 
-def compute_totals(df, waiting_rate=7.5):
-    sub = df.copy()
+st.set_page_config(page_title=f"{cfg.APP_TITLE} - Monthly Report", layout="wide")
 
-    numeric_cols = [
-        "amount",
-        "waiting_hours",
-        "waiting_amount",
-        "expenses_amount",
-        "hours",
-        "add_pay",
-    ]
+DB["ensure_schema"]()
+ensure_default_user(cfg)
+require_login()
 
-    for col in numeric_cols:
-        if col not in sub.columns:
-            sub[col] = 0.0
-        sub[col] = pd.to_numeric(sub[col], errors="coerce").fillna(0.0)
+st.subheader("Monthly Report")
 
-    total_job_amount = float(sub["amount"].sum())
-    total_wait_hours = float(sub["waiting_hours"].sum())
+df = DB["read_all"]()
+today = date.today()
+current_month = today.strftime("%Y-%m")
 
-    # Recalculate waiting_amount if missing or unreliable
-    if "waiting_amount" in sub.columns:
-        total_wait_amount = float(sub["waiting_amount"].sum())
-    else:
-        total_wait_amount = total_wait_hours * float(waiting_rate)
+if df.empty:
+    st.info("No jobs found.")
+    st.write(f"Month: {current_month}")
+    st.stop()
 
-    total_add_pay = float(sub["add_pay"].sum()) if "add_pay" in sub.columns else 0.0
-    total_expenses = float(sub["expenses_amount"].sum())
+df = df.copy()
+df["work_date"] = pd.to_datetime(df["work_date"], errors="coerce")
+df = df.dropna(subset=["work_date"])
+df["_month"] = df["work_date"].dt.to_period("M").astype(str)
 
-    driver_pay = total_job_amount + total_wait_amount + total_add_pay
-    total_received = driver_pay - total_expenses
+all_months = sorted(df["_month"].unique().tolist(), reverse=True)
+options = [current_month] + [m for m in all_months if m != current_month]
 
-    return Totals(
-        total_job_amount=total_job_amount,
-        total_wait_hours=total_wait_hours,
-        total_wait_amount=total_wait_amount,
-        total_add_pay=total_add_pay,
-        driver_pay=driver_pay,
-        total_expenses=total_expenses,
-        total_received=total_received,
-    )
+selected = st.selectbox("Select month", options, index=0)
+
+sub = df[df["_month"] == selected].copy()
+
+st.write(f"Month: {selected}")
+
+if sub.empty:
+    st.info("No jobs found for this month.")
+    st.stop()
+
+display_jobs_table(sub.drop(columns=["_month"], errors="ignore"))
