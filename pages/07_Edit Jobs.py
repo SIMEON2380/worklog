@@ -18,6 +18,7 @@ require_login()
 
 st.subheader("Edit Jobs (Form)")
 
+
 # -------------------------
 # Helpers
 # -------------------------
@@ -91,12 +92,14 @@ if filtered.empty:
     st.warning("No matching jobs.")
     st.stop()
 
+
 def label_row(r) -> str:
     jid = str(r.get("job_id", "") or "")
     vreg = str(r.get("vehicle_reg", "") or "")
     wdt = r.get("work_date", None)
     d = wdt.isoformat() if hasattr(wdt, "isoformat") else str(wdt or "")
     return f"#{int(r['id'])} | {jid} | {vreg} | {d}"
+
 
 rows = filtered.sort_values(by="id", ascending=False).to_dict("records")
 labels = [label_row(r) for r in rows]
@@ -110,6 +113,7 @@ choice = right.selectbox(
 job = rows[choice]
 row_id = int(job["id"])
 
+st.caption(f"Selected Row ID: {row_id}")
 st.divider()
 
 # -------------------------
@@ -160,13 +164,11 @@ with st.form("edit_job_form"):
         value=float(job.get("expenses_amount") or 0.0),
     )
 
-    # --- WAITING TIME: edit in the same format your reports expect ---
     waiting_time = col12.text_input(
         "Waiting Time (e.g. 10-11 or 09:00-11:30)",
         value=str(job.get("waiting_time") or ""),
     )
 
-    # Auto-derived values from waiting_time
     calc_waiting_hours = float(parse_wait_range_to_hours(waiting_time))
     calc_waiting_amount = float(calc_waiting_hours) * float(getattr(cfg, "WAITING_RATE", 0.0))
 
@@ -188,8 +190,6 @@ with st.form("edit_job_form"):
         disabled=True,
     )
 
-    # Add Pay input (NEW column in DB)
-    # Shows only if DB has the column; otherwise keep UI stable (no crash)
     add_pay_value = float(job.get("add_pay") or 0.0) if "add_pay" in df.columns else 0.0
     add_pay = col15.number_input(
         "Add Pay (£)",
@@ -200,7 +200,6 @@ with st.form("edit_job_form"):
         help=None if "add_pay" in df.columns else "DB column add_pay not found. Run ALTER TABLE to add it.",
     )
 
-    # Keep Hours (if used) on its own line (so layout stays clean)
     hours = st.number_input(
         "Hours (if used)",
         min_value=0.0,
@@ -247,12 +246,10 @@ with st.form("edit_job_form"):
         set_if_changed("job_expenses", job_expenses)
         set_if_changed("expenses_amount", float(expenses_amount))
 
-        # Save waiting in the format reports expect + keep numeric columns aligned
         set_if_changed("waiting_time", waiting_time.strip() if waiting_time else None)
         set_if_changed("waiting_hours", float(calc_waiting_hours))
         set_if_changed("waiting_amount", float(calc_waiting_amount))
 
-        # Save Add Pay if column exists
         if "add_pay" in df.columns:
             set_if_changed("add_pay", float(add_pay))
 
@@ -261,7 +258,6 @@ with st.form("edit_job_form"):
         set_if_changed("auth_code", auth_code.strip() if auth_code else None)
         set_if_changed("comments", comments.strip() if comments else None)
 
-        # Status: keep both columns in sync if both exist
         if STATUS_COL:
             set_if_changed(STATUS_COL, job_status)
             if STATUS_COL == "job_status" and "status" in df.columns:
@@ -275,3 +271,21 @@ with st.form("edit_job_form"):
             st.rerun()
         else:
             st.info("No changes detected.")
+
+st.divider()
+
+# -------------------------
+# Delete selected job
+# -------------------------
+st.markdown("### Delete Selected Job")
+st.error("This permanently deletes the selected job from the database.")
+
+delete_confirm = st.checkbox(f"I confirm I want to delete job row #{row_id}")
+
+if st.button("Delete selected job"):
+    if not delete_confirm:
+        st.warning("Tick the confirmation box before deleting.")
+    else:
+        DB["delete_row"](row_id)
+        st.success(f"Job row #{row_id} deleted successfully.")
+        st.rerun()
