@@ -32,10 +32,35 @@ if sub.empty:
     st.info("No Inspect & Collect jobs found.")
     st.stop()
 
+# -------------------------
+# Vehicle Reg filter only
+# -------------------------
+if "vehicle_reg" not in sub.columns:
+    st.error("Missing 'vehicle_reg' column in dataset.")
+    st.stop()
+
+reg_search = st.text_input("Filter by Vehicle Reg")
+
+if reg_search:
+    sub = sub[
+        sub["vehicle_reg"].astype(str).str.contains(reg_search, case=False, na=False)
+    ].copy()
+
+if sub.empty:
+    st.info("No Inspect & Collect jobs match that vehicle reg.")
+    st.stop()
+
 # Make sure numbers are numeric
-sub["amount"] = pd.to_numeric(sub["amount"], errors="coerce").fillna(0.0)
-sub["waiting_amount"] = pd.to_numeric(sub["waiting_amount"], errors="coerce").fillna(0.0)
-sub["waiting_hours"] = pd.to_numeric(sub["waiting_hours"], errors="coerce").fillna(0.0)
+sub["amount"] = pd.to_numeric(sub.get("amount", 0), errors="coerce").fillna(0.0)
+sub["waiting_amount"] = pd.to_numeric(sub.get("waiting_amount", 0), errors="coerce").fillna(0.0)
+sub["waiting_hours"] = pd.to_numeric(sub.get("waiting_hours", 0), errors="coerce").fillna(0.0)
+
+# Make sure optional display columns exist
+if "waiting_time" not in sub.columns:
+    sub["waiting_time"] = ""
+
+if "job_status" not in sub.columns:
+    sub["job_status"] = ""
 
 # Per-job computed pay
 sub["inspect_base"] = float(cfg.INSPECT_COLLECT_RATE)  # always £8
@@ -63,6 +88,7 @@ st.caption("Inspect & Collect pay breakdown (computed)")
 breakdown = sub[[
     "work_date",
     "job_id",
+    "vehicle_reg",
     "category",
     "job_status",
     "inspect_base",
