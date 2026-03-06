@@ -5,7 +5,7 @@ from datetime import date
 from worklog.config import Config
 from worklog.db import make_db
 from worklog.auth import ensure_default_user
-from worklog.ui import require_login, display_jobs_table
+from worklog.ui import require_login
 
 cfg = Config()
 DB = make_db(cfg)
@@ -28,8 +28,18 @@ if df.empty:
     st.stop()
 
 df = df.copy()
+
+if "work_date" not in df.columns:
+    st.error("Missing 'work_date' column in dataset.")
+    st.stop()
+
 df["work_date"] = pd.to_datetime(df["work_date"], errors="coerce")
 df = df.dropna(subset=["work_date"])
+
+if df.empty:
+    st.info("No valid work dates found.")
+    st.stop()
+
 df["_month"] = df["work_date"].dt.to_period("M").astype(str)
 
 all_months = sorted(df["_month"].unique().tolist(), reverse=True)
@@ -45,4 +55,6 @@ if sub.empty:
     st.info("No jobs found for this month.")
     st.stop()
 
-display_jobs_table(sub.drop(columns=["_month"], errors="ignore"))
+sub = sub.drop(columns=["_month"], errors="ignore")
+
+st.dataframe(sub, use_container_width=True)
