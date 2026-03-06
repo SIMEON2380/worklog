@@ -47,36 +47,56 @@ if df.empty:
     st.stop()
 
 # -------------------------
-# Brand extractor
+# Improved brand extractor
 # -------------------------
-KNOWN_MAKES = [
-    "TESLA", "BMW", "MERCEDES", "AUDI", "VOLKSWAGEN", "VW", "FORD", "TOYOTA",
-    "NISSAN", "KIA", "HYUNDAI", "PEUGEOT", "RENAULT", "VAUXHALL", "SKODA",
-    "SEAT", "LAND", "RANGE", "VOLVO", "MINI", "HONDA", "MAZDA", "LEXUS",
-    "PORSCHE", "JAGUAR", "FIAT", "CITROEN", "DACIA", "MG", "BYD", "CUPRA"
-]
+KNOWN_MAKES = {
+    "TESLA": ["TESLA"],
+    "BMW": ["BMW"],
+    "AUDI": ["AUDI"],
+    "MERCEDES": ["MERCEDES", "MERC"],
+    "VOLKSWAGEN": ["VOLKSWAGEN", "VW"],
+    "FORD": ["FORD"],
+    "TOYOTA": ["TOYOTA"],
+    "NISSAN": ["NISSAN"],
+    "KIA": ["KIA"],
+    "HYUNDAI": ["HYUNDAI"],
+    "PEUGEOT": ["PEUGEOT"],
+    "RENAULT": ["RENAULT"],
+    "VAUXHALL": ["VAUXHALL"],
+    "SKODA": ["SKODA"],
+    "SEAT": ["SEAT"],
+    "LAND ROVER": ["LAND ROVER"],
+    "RANGE ROVER": ["RANGE ROVER"],
+    "VOLVO": ["VOLVO"],
+    "MINI": ["MINI"],
+    "HONDA": ["HONDA"],
+    "MAZDA": ["MAZDA"],
+    "LEXUS": ["LEXUS"],
+    "PORSCHE": ["PORSCHE"],
+    "JAGUAR": ["JAGUAR"],
+    "FIAT": ["FIAT"],
+    "CITROEN": ["CITROEN"],
+    "DACIA": ["DACIA"],
+    "MG": ["MG"],
+    "BYD": ["BYD"],
+    "CUPRA": ["CUPRA"],
+}
 
 def extract_make(desc: str) -> str:
     text = str(desc).strip().upper()
     if not text:
         return "UNKNOWN"
 
+    for brand, patterns in KNOWN_MAKES.items():
+        for pattern in patterns:
+            if pattern in text:
+                return brand
+
     words = text.split()
     if not words:
         return "UNKNOWN"
 
-    first = words[0]
-
-    # handle LAND ROVER / RANGE ROVER properly
-    if len(words) >= 2 and first == "LAND" and words[1] == "ROVER":
-        return "LAND ROVER"
-    if len(words) >= 2 and first == "RANGE" and words[1] == "ROVER":
-        return "RANGE ROVER"
-
-    if first in KNOWN_MAKES:
-        return first
-
-    return first
+    return words[0]
 
 df["vehicle_make"] = df["vehicle_description"].apply(extract_make)
 
