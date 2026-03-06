@@ -6,6 +6,7 @@ from worklog.config import Config
 from worklog.db import make_db
 from worklog.auth import ensure_default_user
 from worklog.ui import require_login
+from worklog.reporting import compute_totals
 
 cfg = Config()
 DB = make_db(cfg)
@@ -55,6 +56,18 @@ if sub.empty:
     st.info("No jobs found for this month.")
     st.stop()
 
-sub = sub.drop(columns=["_month"], errors="ignore")
+totals = compute_totals(sub, waiting_rate=cfg.WAITING_RATE)
 
+c1, c2, c3, c4, c5, c6, c7 = st.columns(7)
+c1.metric("Job Amount", f"£{totals.total_job_amount:,.2f}")
+c2.metric("Waiting Hours", f"{totals.total_wait_hours:,.2f} hrs")
+c3.metric("Waiting Pay", f"£{totals.total_wait_amount:,.2f}")
+c4.metric("Add-Pay", f"£{totals.total_add_pay:,.2f}")
+c5.metric("Driver Pay", f"£{totals.driver_pay:,.2f}")
+c6.metric("Expenses (Reimbursed)", f"£{totals.total_expenses:,.2f}")
+c7.metric("Total Received", f"£{totals.total_received:,.2f}")
+
+st.divider()
+
+sub = sub.drop(columns=["_month"], errors="ignore")
 st.dataframe(sub, use_container_width=True)
