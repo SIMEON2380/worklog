@@ -1,3 +1,4 @@
+import re
 import streamlit as st
 from datetime import date
 import pandas as pd
@@ -17,6 +18,7 @@ ensure_default_user(cfg)
 require_login()
 
 st.subheader("Add New Job")
+
 
 # -------------------------
 # Helpers
@@ -54,6 +56,121 @@ def parse_wait_range_to_hours(s: str) -> float:
         return 0.0
 
 
+def normalise_postcode(value: str) -> str:
+    if value is None:
+        return ""
+    text = str(value).strip().upper()
+    text = re.sub(r"\s+", "", text)
+    return text
+
+
+def find_postcode_history(df: pd.DataFrame, postcode: str) -> pd.DataFrame:
+    if df.empty or not postcode:
+        return pd.DataFrame()
+
+    if "postcode" not in df.columns:
+        return pd.DataFrame()
+
+    sub = df.copy()
+
+    sub["postcode_norm"] = (
+        sub["postcode"]
+        .fillna("")
+        .astype(str)
+        .apply(normalise_postcode)
+    )
+
+    target = normalise_postcode(postcode)
+    matches = sub[sub["postcode_norm"] == target].copy()
+
+    if matches.empty:
+        return matches
+
+    if "work_date" in matches.columns:
+        matches["work_date"] = pd.to_datetime(matches["work_date"], errors="coerce")
+        matches = matches.sort_values("work_date", ascending=False)
+
+    return matches
+
+
+def show_postcode_history_box(df_all: pd.DataFrame, entered_postcode: str) -> None:
+    entered_postcode = str(entered_postcode or "").strip()
+
+    if not entered_postcode:
+        return
+
+    matches = find_postcode_history(df_all, entered_postcode)
+
+    if matches.empty:
+        st.info("No previous jobs found for this postcode.")
+        return
+
+    times_visited = len(matches)
+
+    last_visited = "N/A"
+    if "work_date" in matches.columns and matches["work_date"].notna().any():
+        last_dt = matches["work_date"].dropna().iloc[0]
+        last_visited = last_dt.strftime("%Y-%m-%d")
+
+    last_vehicle = "N/A"
+    if "vehicle_description" in matches.columns:
+        vals = matches["vehicle_description"].fillna("").astype(str).str.strip()
+        vals = vals[vals != ""]
+        if not vals.empty:
+            last_vehicle = vals.iloc[0]
+
+    last_job_type = "N/A"
+    if "category" in matches.columns:
+        vals = matches["category"].fillna("").astype(str).str.strip()
+        vals = vals[vals != ""]
+        if not vals.empty:
+            last_job_type = vals.iloc[0]
+
+    last_comment = "N/A"
+    comment_col = None
+    for col in ["comments", "description", "comment", "notes"]:
+        if col in matches.columns:
+            comment_col = col
+            break
+
+    if comment_col:
+        vals = matches[comment_col].fillna("").astype(str).str.strip()
+        vals = vals[vals != ""]
+        if not vals.empty:
+            last_comment = vals.iloc[0]
+
+    st.warning(f"You've been here before: {times_visited} time(s).")
+
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Times Visited", times_visited)
+    c2.metric("Last Visited", last_visited)
+    c3.metric("Last Job Type", last_job_type)
+
+    c4, c5 = st.columns(2)
+    c4.metric("Last Vehicle", last_vehicle)
+    c5.metric("Postcode", entered_postcode.upper())
+
+    if last_comment != "N/A":
+        st.caption(f"Last note: {last_comment}")
+
+    with st.expander("Show previous jobs for this postcode"):
+        show_cols = [
+            "work_date",
+            "job_id",
+            "category",
+            "vehicle_description",
+            "collection_from",
+            "delivery_to",
+            "job_status",
+            "postcode",
+        ]
+        available_cols = [c for c in show_cols if c in matches.columns]
+        st.dataframe(matches[available_cols], use_container_width=True, hide_index=True)
+
+
+# Load all rows once for postcode lookup
+df_all = DB["read_all"]().copy()
+
 with st.form("add_job_form"):
     col1, col2, col3 = st.columns(3)
 
@@ -74,8 +191,10 @@ with st.form("add_job_form"):
     col10, col11, col12 = st.columns(3)
     job_expenses = col10.selectbox("Job Expenses", cfg.JOB_EXPENSE_OPTIONS)
     expenses_amount = col11.number_input("Expenses Amount (£)", min_value=0.0, step=0.5)
-
     waiting_time = col12.text_input("Waiting Time (e.g. 10-11 or 09:00-11:30)")
+
+    # NEW: Postcode field
+    postcode = st.text_input("Postcode")
 
     # Auto-calc waiting from waiting_time (keeps reports consistent)
     calc_waiting_hours = float(parse_wait_range_to_hours(waiting_time))
@@ -97,7 +216,6 @@ with st.form("add_job_form"):
         disabled=True,
     )
 
-    # NEW: Add Pay column
     add_pay = col15.number_input("Add Pay (£)", min_value=0.0, step=1.0, value=0.0)
 
     auth_code = st.text_input("Auth Code")
@@ -115,12 +233,13 @@ with st.form("add_job_form"):
                 "vehicle_reg": vehicle_reg.strip() if vehicle_reg else None,
                 "collection_from": collection_from.strip() if collection_from else None,
                 "delivery_to": delivery_to.strip() if delivery_to else None,
+                "postcode": postcode.strip().upper() if postcode else None,
                 "amount": float(job_amount) if job_amount is not None else 0.0,
                 "job_expenses": job_expenses,
                 "expenses_amount": float(expenses_amount) if expenses_amount is not None else 0.0,
                 "auth_code": auth_code.strip() if auth_code else None,
                 "job_status": job_status,
-                "status": job_status,  # keep both columns aligned (your schema has both)
+                "status": job_status,
                 "waiting_time": waiting_time.strip() if waiting_time else None,
                 "waiting_hours": float(calc_waiting_hours),
                 "waiting_amount": float(calc_waiting_amount),
@@ -131,3 +250,7 @@ with st.form("add_job_form"):
 
         st.success("Job saved successfully.")
         st.rerun()
+
+
+# Show postcode history outside the form so it updates before save
+show_postcode_history_box(df_all, locals().get("postcode", ""))
