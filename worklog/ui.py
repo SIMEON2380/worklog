@@ -23,7 +23,7 @@ def require_login() -> None:
 # -------------------------
 def ui_to_db_map(cfg: Config) -> Dict[str, str]:
     # keep labels exactly as in cfg.UI_COLUMNS (including typos)
-    return {
+    base = {
         "Date": "work_date",
         "job number": "job_id",
         "job type": "category",
@@ -40,32 +40,41 @@ def ui_to_db_map(cfg: Config) -> Dict[str, str]:
         "comments": "comments",
     }
 
+    # extra support column
+    base["paid date"] = "paid_date"
+    return base
+
 
 def db_to_ui_map(cfg: Config) -> Dict[str, str]:
     m = ui_to_db_map(cfg)
     return {v: k for k, v in m.items()}
 
 
-def to_ui_table(cfg: Config, df_db: pd.DataFrame) -> pd.DataFrame:
+def to_ui_table(cfg: Config, df_db: pd.DataFrame, include_paid_date: bool = True) -> pd.DataFrame:
     """
     UI-formatted dataframe:
     - keep id (hidden in display, used for edits)
     - columns in cfg.UI_COLUMNS order + exact labels
+    - optionally append paid date
     """
+    base_cols = ["id"] + list(cfg.UI_COLUMNS)
+    if include_paid_date and "paid date" not in base_cols:
+        base_cols.append("paid date")
+
     if df_db is None or df_db.empty:
-        cols = ["id"] + list(cfg.UI_COLUMNS)
-        return pd.DataFrame(columns=cols)
+        return pd.DataFrame(columns=base_cols)
 
     df = df_db.copy()
 
-    # Ensure id exists
     if "id" not in df.columns:
         df["id"] = None
 
-    # Ensure expected DB cols exist
     for c in cfg.EXPECTED_DB_COLS:
         if c not in df.columns:
             df[c] = None
+
+    if "paid_date" not in df.columns:
+        df["paid_date"] = None
 
     m = ui_to_db_map(cfg)
 
@@ -75,6 +84,9 @@ def to_ui_table(cfg: Config, df_db: pd.DataFrame) -> pd.DataFrame:
     for ui_col in cfg.UI_COLUMNS:
         db_col = m.get(ui_col)
         out[ui_col] = df[db_col] if db_col in df.columns else None
+
+    if include_paid_date:
+        out["paid date"] = df["paid_date"]
 
     return out
 
@@ -157,11 +169,16 @@ def report_totals(df: pd.DataFrame) -> Dict[str, float]:
 # -------------------------
 # Table display (non-edit)
 # -------------------------
-def display_jobs_table(cfg: Config, df_db: pd.DataFrame, caption: Optional[str] = None) -> None:
+def display_jobs_table(
+    cfg: Config,
+    df_db: pd.DataFrame,
+    caption: Optional[str] = None,
+    show_paid_date: bool = True,
+) -> None:
     if caption:
         st.caption(caption)
 
-    ui_df = to_ui_table(cfg, df_db)
+    ui_df = to_ui_table(cfg, df_db, include_paid_date=show_paid_date)
     show_df = ui_df.drop(columns=["id"], errors="ignore")
     st.dataframe(show_df, use_container_width=True)
 
@@ -177,15 +194,15 @@ def editable_jobs_table(
     allow_type_edit: bool = True,
 ) -> None:
     """
-    Inline editor + Save button using your db.py API: update_row_by_id().
+    Inline editor + Save button using db.py update_row(row_id, diffs).
     """
     if df_db is None or df_db.empty:
         st.info("No rows to show.")
         return
 
-    ui_df = to_ui_table(cfg, df_db)
+    ui_df = to_ui_table(cfg, df_db, include_paid_date=True)
 
-    disabled_cols = ["id"]
+    disabled_cols = ["id", "paid date"]
     if not allow_type_edit:
         disabled_cols.append("job type")
 
@@ -198,6 +215,7 @@ def editable_jobs_table(
             "job status": st.column_config.SelectboxColumn("job status", options=cfg.STATUS_OPTIONS),
             "job type": st.column_config.SelectboxColumn("job type", options=cfg.JOB_TYPE_OPTIONS),
             "Job Expenses": st.column_config.SelectboxColumn("Job Expenses", options=cfg.JOB_EXPENSE_OPTIONS),
+            "paid date": st.column_config.TextColumn("paid date", disabled=True),
         },
         use_container_width=True,
     )
@@ -207,54 +225,50 @@ def editable_jobs_table(
         updated = edited.set_index("id")
         changes = 0
 
+        def same_value(a: Any, b: Any) -> bool:
+            if pd.isna(a) and pd.isna(b):
+                return True
+            return str(a) == str(b)
+
+        def clean_float(x: Any) -> Optional[float]:
+            if x in (None, ""):
+                return None
+            try:
+                return float(x)
+            except Exception:
+                return None
+
         for row_id in updated.index:
             before = original.loc[row_id].to_dict()
             after = updated.loc[row_id].to_dict()
 
-            # detect diffs (UI-space)
-            changed = False
+            changed_fields = {}
             for k, v in after.items():
-                b = before.get(k)
-                if pd.isna(b) and pd.isna(v):
+                if k == "paid date":
                     continue
-                if (pd.isna(b) and not pd.isna(v)) or (not pd.isna(b) and pd.isna(v)) or (str(b) != str(v)):
-                    changed = True
-                    break
+                if not same_value(before.get(k), v):
+                    changed_fields[k] = v
 
-            if not changed:
+            if not changed_fields:
                 continue
 
-            row_db = ui_row_to_db_fields(cfg, after)
+            row_db = ui_row_to_db_fields(cfg, changed_fields)
 
-            # Convert date safely
-            wd = row_db.get("work_date")
-            wd_dt = pd.to_datetime(wd, errors="coerce").date() if wd not in (None, "") else date.today()
+            if "work_date" in row_db:
+                wd = row_db.get("work_date")
+                if wd in (None, ""):
+                    row_db["work_date"] = None
+                else:
+                    wd_parsed = pd.to_datetime(wd, errors="coerce")
+                    row_db["work_date"] = wd_parsed.date().isoformat() if pd.notna(wd_parsed) else None
 
-            # Convert numbers safely
-            def fnum(x):
-                try:
-                    return float(x)
-                except Exception:
-                    return None
+            if "amount" in row_db:
+                row_db["amount"] = clean_float(row_db.get("amount"))
 
-            DB["update_row_by_id"](
-                int(row_id),
-                wd_dt,
-                str(row_db.get("job_id") or ""),
-                str(row_db.get("category") or cfg.JOB_TYPE_OPTIONS[0]),
-                str(row_db.get("vehicle_description") or ""),
-                str(row_db.get("vehicle_reg") or ""),
-                str(row_db.get("collection_from") or ""),
-                str(row_db.get("delivery_to") or ""),
-                fnum(row_db.get("amount")),
-                row_db.get("job_expenses"),
-                fnum(row_db.get("expenses_amount")),
-                str(row_db.get("auth_code") or ""),
-                str(row_db.get("job_status") or "Pending"),
-                str(row_db.get("waiting_time") or ""),
-                str(row_db.get("comments") or ""),
-            )
+            if "expenses_amount" in row_db:
+                row_db["expenses_amount"] = clean_float(row_db.get("expenses_amount"))
 
+            DB["update_row"](int(row_id), row_db)
             changes += 1
 
         st.success(f"Saved changes for {changes} job(s).")
