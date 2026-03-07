@@ -64,6 +64,14 @@ if "edit_job_search" not in st.session_state:
 if "edit_job_choice" not in st.session_state:
     st.session_state.edit_job_choice = 0
 
+if "clear_edit_form_after_save" not in st.session_state:
+    st.session_state.clear_edit_form_after_save = False
+
+if st.session_state.clear_edit_form_after_save:
+    st.session_state.edit_job_search = ""
+    st.session_state.edit_job_choice = 0
+    st.session_state.clear_edit_form_after_save = False
+
 
 df = DB["read_all"]().copy()
 if df.empty:
@@ -315,8 +323,7 @@ with st.form("edit_job_form"):
             DB["update_row"](row_id, diffs)
 
             # Clear field mechanism after save
-            st.session_state.edit_job_search = ""
-            st.session_state.edit_job_choice = 0
+            st.session_state.clear_edit_form_after_save = True
 
             st.success("Saved. Reports will reflect this immediately.")
             st.rerun()
