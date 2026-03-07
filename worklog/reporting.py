@@ -49,6 +49,67 @@ def _num(series: pd.Series) -> pd.Series:
     return pd.to_numeric(series, errors="coerce").fillna(0.0)
 
 
+def _status_col(df: pd.DataFrame) -> Optional[str]:
+    if "job_status" in df.columns:
+        return "job_status"
+    if "status" in df.columns:
+        return "status"
+    return None
+
+
+def _normalise_status(df: pd.DataFrame) -> pd.DataFrame:
+    out = df.copy()
+    status_col = _status_col(out)
+    if status_col:
+        out[status_col] = (
+            out[status_col]
+            .fillna("")
+            .astype(str)
+            .str.strip()
+            .str.lower()
+        )
+    return out
+
+
+def compute_pending_totals(df: pd.DataFrame) -> float:
+    """
+    Returns total outstanding money for jobs with status = pending.
+
+    Calculation:
+        amount + waiting_amount + add_pay - expenses_amount
+    """
+    if df is None or getattr(df, "empty", True):
+        return 0.0
+
+    d = _normalise_status(df)
+    status_col = _status_col(d)
+    if not status_col:
+        return 0.0
+
+    pending_df = d[d[status_col] == "pending"].copy()
+    if pending_df.empty:
+        return 0.0
+
+    pending_df["amount"] = _num(pending_df["amount"]) if "amount" in pending_df.columns else 0.0
+    pending_df["waiting_hours"] = _num(pending_df["waiting_hours"]) if "waiting_hours" in pending_df.columns else 0.0
+    pending_df["waiting_amount"] = (
+        _num(pending_df["waiting_amount"])
+        if "waiting_amount" in pending_df.columns
+        else pd.Series([0.0] * len(pending_df), index=pending_df.index)
+    )
+    pending_df["expenses_amount"] = _num(pending_df["expenses_amount"]) if "expenses_amount" in pending_df.columns else 0.0
+    pending_df["add_pay"] = _num(pending_df["add_pay"]) if "add_pay" in pending_df.columns else 0.0
+
+    total = (
+        float(pending_df["amount"].sum())
+        + float(pending_df["waiting_amount"].sum())
+        + float(pending_df["add_pay"].sum())
+        - float(pending_df["expenses_amount"].sum())
+    )
+
+    return round(float(total), 2)
+
+
 def compute_totals(
     df: pd.DataFrame,
     waiting_rate: float = 7.5,          # default keeps old pages working
