@@ -62,14 +62,14 @@ if "edit_job_search" not in st.session_state:
     st.session_state.edit_job_search = ""
 
 if "edit_job_choice" not in st.session_state:
-    st.session_state.edit_job_choice = 0
+    st.session_state.edit_job_choice = None
 
 if "clear_edit_form_after_save" not in st.session_state:
     st.session_state.clear_edit_form_after_save = False
 
 if st.session_state.clear_edit_form_after_save:
     st.session_state.edit_job_search = ""
-    st.session_state.edit_job_choice = 0
+    st.session_state.edit_job_choice = None
     st.session_state.clear_edit_form_after_save = False
 
 
@@ -128,16 +128,22 @@ def label_row(r) -> str:
 rows = filtered.sort_values(by="id", ascending=False).to_dict("records")
 labels = [label_row(r) for r in rows]
 
-if st.session_state.edit_job_choice >= len(rows):
-    st.session_state.edit_job_choice = 0
+options = [None] + list(range(len(rows)))
+
+if st.session_state.edit_job_choice not in options:
+    st.session_state.edit_job_choice = None
 
 choice = right.selectbox(
     "Select job to edit",
-    options=list(range(len(rows))),
-    index=st.session_state.edit_job_choice,
-    format_func=lambda i: labels[i],
+    options=options,
+    index=options.index(st.session_state.edit_job_choice),
+    format_func=lambda i: "Select a job..." if i is None else labels[i],
     key="edit_job_choice",
 )
+
+if choice is None:
+    st.info("Select a job to edit.")
+    st.stop()
 
 job = rows[choice]
 row_id = int(job["id"])
