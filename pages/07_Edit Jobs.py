@@ -78,6 +78,9 @@ if "id" not in df.columns:
 if "work_date" in df.columns:
     df["work_date"] = pd.to_datetime(df["work_date"], errors="coerce").dt.date
 
+if "paid_date" in df.columns:
+    df["paid_date"] = pd.to_datetime(df["paid_date"], errors="coerce").dt.date
+
 # Prefer job_status if present, else status
 STATUS_COL = "job_status" if "job_status" in df.columns else ("status" if "status" in df.columns else None)
 
@@ -218,11 +221,30 @@ with st.form("edit_job_form"):
         help=None if "add_pay" in df.columns else "DB column add_pay not found. Run ALTER TABLE to add it.",
     )
 
-    hours = st.number_input(
+    col16, col17 = st.columns(2)
+
+    hours = col16.number_input(
         "Hours (if used)",
         min_value=0.0,
         step=0.5,
         value=float(job.get("hours") or 0.0),
+    )
+
+    existing_paid_date = job.get("paid_date") if "paid_date" in df.columns else None
+    if pd.isna(existing_paid_date):
+        existing_paid_date = None
+
+    default_paid_date = existing_paid_date or date.today()
+
+    paid_date = col17.date_input(
+        "Paid Date",
+        value=default_paid_date,
+        disabled=(("paid_date" not in df.columns) or (str(job_status).strip().lower() != "paid")),
+        help=(
+            "Auto-fills to today when status is Paid, but you can change it manually."
+            if "paid_date" in df.columns
+            else "DB column paid_date not found."
+        ),
     )
 
     auth_code = st.text_input("Auth Code", value=str(job.get("auth_code") or ""))
@@ -272,6 +294,12 @@ with st.form("edit_job_form"):
             set_if_changed("add_pay", float(add_pay))
 
         set_if_changed("hours", float(hours))
+
+        if "paid_date" in df.columns:
+            if str(job_status).strip().lower() == "paid":
+                set_if_changed("paid_date", paid_date.isoformat() if paid_date else date.today().isoformat())
+            else:
+                set_if_changed("paid_date", None)
 
         set_if_changed("auth_code", auth_code.strip() if auth_code else None)
         set_if_changed("comments", comments.strip() if comments else None)
