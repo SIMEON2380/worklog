@@ -55,6 +55,25 @@ def parse_wait_range_to_hours(s: str) -> float:
         return 0.0
 
 
+def _safe_float(value, default: float = 0.0) -> float:
+    try:
+        if pd.isna(value):
+            return default
+        return float(value)
+    except Exception:
+        return default
+
+
+# -------------------------
+# Session state defaults
+# -------------------------
+if "edit_job_search" not in st.session_state:
+    st.session_state.edit_job_search = ""
+
+if "edit_job_choice" not in st.session_state:
+    st.session_state.edit_job_choice = None
+
+
 df = DB["read_all"]().copy()
 if df.empty:
     st.info("No jobs found.")
@@ -76,16 +95,22 @@ STATUS_COL = "job_status" if "job_status" in df.columns else ("status" if "statu
 # -------------------------
 left, right = st.columns([2, 3])
 
-job_search = left.text_input("Search by Job Number / Vehicle Reg (optional)")
+job_search = left.text_input(
+    "Search by Job Number / Vehicle Reg (optional)",
+    key="edit_job_search",
+)
+
 filtered = df.copy()
 
 if job_search.strip():
     s = job_search.strip().lower()
-    mask = False
+    mask = pd.Series(False, index=filtered.index)
+
     if "job_id" in filtered.columns:
         mask = mask | filtered["job_id"].astype(str).str.lower().str.contains(s, na=False)
     if "vehicle_reg" in filtered.columns:
         mask = mask | filtered["vehicle_reg"].astype(str).str.lower().str.contains(s, na=False)
+
     filtered = filtered[mask]
 
 if filtered.empty:
@@ -102,15 +127,34 @@ def label_row(r) -> str:
 
 
 rows = filtered.sort_values(by="id", ascending=False).to_dict("records")
-labels = [label_row(r) for r in rows]
+row_map = {int(r["id"]): r for r in rows}
 
-choice = right.selectbox(
+select_options = [None] + [int(r["id"]) for r in rows]
+
+
+def format_job_option(row_id):
+    if row_id is None:
+        return "Select a job..."
+    return label_row(row_map[row_id])
+
+
+# If previously selected job no longer exists in filtered results, clear it
+if st.session_state.edit_job_choice not in select_options:
+    st.session_state.edit_job_choice = None
+
+selected_row_id = right.selectbox(
     "Select job to edit",
-    options=list(range(len(rows))),
-    format_func=lambda i: labels[i],
+    options=select_options,
+    index=select_options.index(st.session_state.edit_job_choice),
+    format_func=format_job_option,
+    key="edit_job_choice",
 )
 
-job = rows[choice]
+if selected_row_id is None:
+    st.info("Pick a job to load it into the form.")
+    st.stop()
+
+job = row_map[int(selected_row_id)]
 row_id = int(job["id"])
 
 st.caption(f"Selected Row ID: {row_id}")
@@ -119,7 +163,7 @@ st.divider()
 # -------------------------
 # Edit form (same style as Add Entry)
 # -------------------------
-with st.form("edit_job_form"):
+with st.form(f"edit_job_form_{row_id}"):
     col1, col2, col3 = st.columns(3)
 
     work_date = col1.date_input("Date", value=job.get("work_date") or date.today())
@@ -148,7 +192,7 @@ with st.form("edit_job_form"):
         "Job Amount (£)",
         min_value=0.0,
         step=1.0,
-        value=float(job.get("amount") or 0.0),
+        value=_safe_float(job.get("amount"), 0.0),
     )
 
     col10, col11, col12 = st.columns(3)
@@ -161,7 +205,7 @@ with st.form("edit_job_form"):
         "Expenses Amount (£)",
         min_value=0.0,
         step=0.5,
-        value=float(job.get("expenses_amount") or 0.0),
+        value=_safe_float(job.get("expenses_amount"), 0.0),
     )
 
     waiting_time = col12.text_input(
@@ -190,7 +234,7 @@ with st.form("edit_job_form"):
         disabled=True,
     )
 
-    add_pay_value = float(job.get("add_pay") or 0.0) if "add_pay" in df.columns else 0.0
+    add_pay_value = _safe_float(job.get("add_pay"), 0.0) if "add_pay" in df.columns else 0.0
     add_pay = col15.number_input(
         "Add Pay (£)",
         min_value=0.0,
@@ -204,7 +248,7 @@ with st.form("edit_job_form"):
         "Hours (if used)",
         min_value=0.0,
         step=0.5,
-        value=float(job.get("hours") or 0.0),
+        value=_safe_float(job.get("hours"), 0.0),
     )
 
     auth_code = st.text_input("Auth Code", value=str(job.get("auth_code") or ""))
@@ -267,6 +311,11 @@ with st.form("edit_job_form"):
 
         if diffs:
             DB["update_row"](row_id, diffs)
+
+            # Clear picker/search so page is ready for the next job
+            st.session_state.edit_job_search = ""
+            st.session_state.edit_job_choice = None
+
             st.success("Saved. Reports will reflect this immediately.")
             st.rerun()
         else:
@@ -287,5 +336,10 @@ if st.button("Delete selected job"):
         st.warning("Tick the confirmation box before deleting.")
     else:
         DB["delete_row"](row_id)
+
+        # Clear picker/search after delete too
+        st.session_state.edit_job_search = ""
+        st.session_state.edit_job_choice = None
+
         st.success(f"Job row #{row_id} deleted successfully.")
         st.rerun()
