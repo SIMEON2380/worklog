@@ -70,4 +70,18 @@ c7.metric("Total Received", f"£{totals.total_received:,.2f}")
 st.divider()
 
 sub = sub.drop(columns=["_month"], errors="ignore")
+
+# Remove unwanted columns from the table
+sub = sub.drop(
+    columns=[
+        "description",
+        "hours",
+        "created_at",
+        "postcode",
+        "customer_name",
+        "site_address",
+    ],
+    errors="ignore",
+)
+
 st.dataframe(sub, use_container_width=True)
