@@ -31,14 +31,15 @@ def actual_paid_received_in_week(df: pd.DataFrame, week_start: date) -> float:
         return 0.0
 
     out[status_col] = out[status_col].fillna("").astype(str).str.strip().str.lower()
-    out["paid_date"] = pd.to_datetime(out["paid_date"], errors="coerce").dt.date
+    out["paid_date"] = pd.to_datetime(out["paid_date"], errors="coerce")
 
-    week_end = week_start + timedelta(days=6)
+    week_start_ts = pd.to_datetime(week_start)
+    week_end_ts = week_start_ts + pd.Timedelta(days=6)
 
     paid_df = out[
         (out[status_col] == "paid") &
-        (out["paid_date"] >= week_start) &
-        (out["paid_date"] <= week_end)
+        (out["paid_date"] >= week_start_ts) &
+        (out["paid_date"] <= week_end_ts)
     ].copy()
 
     def _num(series):
