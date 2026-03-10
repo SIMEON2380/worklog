@@ -80,7 +80,8 @@ def make_db(cfg):
                 updated_at TEXT,
                 status TEXT,
                 add_pay REAL DEFAULT 0,
-                paid_date TEXT
+                paid_date TEXT,
+                job_outcome TEXT
             )
             """
         )
@@ -92,6 +93,9 @@ def make_db(cfg):
 
         if "paid_date" not in cols:
             cur.execute(f"ALTER TABLE {TABLE} ADD COLUMN paid_date TEXT")
+
+        if "job_outcome" not in cols:
+            cur.execute(f"ALTER TABLE {TABLE} ADD COLUMN job_outcome TEXT")
 
         conn.commit()
         conn.close()
@@ -126,6 +130,9 @@ def make_db(cfg):
             safe["created_at"] = now
         if "updated_at" in cols and "updated_at" not in safe:
             safe["updated_at"] = now
+
+        if "job_outcome" in cols and not safe.get("job_outcome"):
+            safe["job_outcome"] = "Completed"
 
         if "paid_date" in cols:
             status_value = safe.get("job_status", safe.get("status"))

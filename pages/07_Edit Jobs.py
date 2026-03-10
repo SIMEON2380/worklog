@@ -92,6 +92,8 @@ if "paid_date" in df.columns:
 # Prefer job_status if present, else status
 STATUS_COL = "job_status" if "job_status" in df.columns else ("status" if "status" in df.columns else None)
 
+OUTCOME_OPTIONS = ["Completed", "Aborted", "Withdraw", "Fail"]
+
 # -------------------------
 # Pick a job
 # -------------------------
@@ -169,37 +171,49 @@ with st.form("edit_job_form"):
     vehicle_description = col4.text_input("Vehicle Description", value=str(job.get("vehicle_description") or ""))
     vehicle_reg = col5.text_input("Vehicle Reg", value=str(job.get("vehicle_reg") or ""))
 
-    current_status = str(job.get(STATUS_COL) or "Start") if STATUS_COL else "Start"
-    job_status = col6.selectbox(
-        "Job Status",
-        cfg.STATUS_OPTIONS,
-        index=(cfg.STATUS_OPTIONS.index(current_status) if current_status in cfg.STATUS_OPTIONS else 0),
+    current_outcome = str(job.get("job_outcome") or "Completed")
+    if current_outcome not in OUTCOME_OPTIONS:
+        current_outcome = "Completed"
+
+    job_outcome = col6.selectbox(
+        "Job Outcome",
+        OUTCOME_OPTIONS,
+        index=OUTCOME_OPTIONS.index(current_outcome),
     )
 
     col7, col8, col9 = st.columns(3)
     collection_from = col7.text_input("Collection From", value=str(job.get("collection_from") or ""))
     delivery_to = col8.text_input("Delivery To", value=str(job.get("delivery_to") or ""))
-    job_amount = col9.number_input(
+
+    current_status = str(job.get(STATUS_COL) or "Pending") if STATUS_COL else "Pending"
+    job_status = col9.selectbox(
+        "Job Status",
+        cfg.STATUS_OPTIONS,
+        index=(cfg.STATUS_OPTIONS.index(current_status) if current_status in cfg.STATUS_OPTIONS else 0),
+    )
+
+    col10, col11, col12 = st.columns(3)
+    job_amount = col10.number_input(
         "Job Amount (£)",
         min_value=0.0,
         step=1.0,
         value=float(job.get("amount") or 0.0),
     )
-
-    col10, col11, col12 = st.columns(3)
-    job_expenses = col10.selectbox(
+    job_expenses = col11.selectbox(
         "Job Expenses",
         cfg.JOB_EXPENSE_OPTIONS,
         index=(cfg.JOB_EXPENSE_OPTIONS.index(job.get("job_expenses")) if job.get("job_expenses") in cfg.JOB_EXPENSE_OPTIONS else 0),
     )
-    expenses_amount = col11.number_input(
+    expenses_amount = col12.number_input(
         "Expenses Amount (£)",
         min_value=0.0,
         step=0.5,
         value=float(job.get("expenses_amount") or 0.0),
     )
 
-    waiting_time = col12.text_input(
+    col13, col14, col15 = st.columns(3)
+
+    waiting_time = col13.text_input(
         "Waiting Time (e.g. 10-11 or 09:00-11:30)",
         value=str(job.get("waiting_time") or ""),
     )
@@ -207,9 +221,7 @@ with st.form("edit_job_form"):
     calc_waiting_hours = float(parse_wait_range_to_hours(waiting_time))
     calc_waiting_amount = float(calc_waiting_hours) * float(getattr(cfg, "WAITING_RATE", 0.0))
 
-    col13, col14, col15 = st.columns(3)
-
-    waiting_hours = col13.number_input(
+    waiting_hours = col14.number_input(
         "Waiting Hours (auto)",
         min_value=0.0,
         step=0.5,
@@ -217,7 +229,7 @@ with st.form("edit_job_form"):
         disabled=True,
     )
 
-    waiting_amount = col14.number_input(
+    waiting_amount = col15.number_input(
         "Waiting Amount (£) (auto)",
         min_value=0.0,
         step=0.5,
@@ -225,8 +237,10 @@ with st.form("edit_job_form"):
         disabled=True,
     )
 
+    col16, col17, col18 = st.columns(3)
+
     add_pay_value = float(job.get("add_pay") or 0.0) if "add_pay" in df.columns else 0.0
-    add_pay = col15.number_input(
+    add_pay = col16.number_input(
         "Add Pay (£)",
         min_value=0.0,
         step=1.0,
@@ -235,9 +249,7 @@ with st.form("edit_job_form"):
         help=None if "add_pay" in df.columns else "DB column add_pay not found. Run ALTER TABLE to add it.",
     )
 
-    col16, col17 = st.columns(2)
-
-    hours = col16.number_input(
+    hours = col17.number_input(
         "Hours (if used)",
         min_value=0.0,
         step=0.5,
@@ -250,7 +262,7 @@ with st.form("edit_job_form"):
 
     default_paid_date = existing_paid_date or date.today()
 
-    paid_date = col17.date_input(
+    paid_date = col18.date_input(
         "Paid Date",
         value=default_paid_date,
         disabled=(("paid_date" not in df.columns) or (str(job_status).strip().lower() != "paid")),
@@ -293,6 +305,7 @@ with st.form("edit_job_form"):
         set_if_changed("category", job_type)
         set_if_changed("vehicle_description", vehicle_description.strip() if vehicle_description else None)
         set_if_changed("vehicle_reg", vehicle_reg.strip() if vehicle_reg else None)
+        set_if_changed("job_outcome", job_outcome)
         set_if_changed("collection_from", collection_from.strip() if collection_from else None)
         set_if_changed("delivery_to", delivery_to.strip() if delivery_to else None)
 
