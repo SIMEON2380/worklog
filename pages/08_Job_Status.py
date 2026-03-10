@@ -238,6 +238,91 @@ with b2:
 st.divider()
 
 # -------------------------
+# Payments To Chase
+# -------------------------
+st.markdown("### Payments To Chase")
+
+if "work_date" in df.columns:
+    chase_df = df.copy()
+
+    chase_df["work_date"] = pd.to_datetime(chase_df["work_date"], errors="coerce")
+    today = pd.Timestamp.today().normalize()
+
+    chase_df = chase_df[chase_df[status_col].str.lower() == "pending"].copy()
+    chase_df = chase_df[chase_df["work_date"].notna()].copy()
+
+    if not chase_df.empty:
+        chase_df["days_pending"] = (today - chase_df["work_date"]).dt.days
+        chase_df["days_pending"] = pd.to_numeric(chase_df["days_pending"], errors="coerce").fillna(0).astype(int)
+
+        pending_7 = chase_df[chase_df["days_pending"] >= 7].copy()
+        pending_14 = chase_df[chase_df["days_pending"] >= 14].copy()
+
+        c1, c2 = st.columns(2)
+        c1.metric("Pending 7+ Days", int(len(pending_7)))
+        c2.metric("Pending 14+ Days", int(len(pending_14)))
+
+        x1, x2 = st.columns(2)
+
+        with x1:
+            st.markdown("#### Pending 7+ Days")
+            if pending_7.empty:
+                st.info("No pending jobs older than 7 days.")
+            else:
+                show_cols = [
+                    c for c in [
+                        "work_date",
+                        "job_id",
+                        "vehicle_reg",
+                        "category",
+                        "job_outcome",
+                        status_col,
+                        "gross_value",
+                        "days_pending",
+                    ]
+                    if c in pending_7.columns
+                ]
+                temp7 = pending_7[show_cols].copy()
+                temp7 = temp7.sort_values("days_pending", ascending=False)
+                if "work_date" in temp7.columns:
+                    temp7["work_date"] = pd.to_datetime(temp7["work_date"], errors="coerce").dt.strftime("%Y-%m-%d")
+                if "gross_value" in temp7.columns:
+                    temp7["gross_value"] = pd.to_numeric(temp7["gross_value"], errors="coerce").fillna(0).round(2)
+                st.dataframe(temp7, use_container_width=True, hide_index=True)
+
+        with x2:
+            st.markdown("#### Pending 14+ Days")
+            if pending_14.empty:
+                st.info("No pending jobs older than 14 days.")
+            else:
+                show_cols = [
+                    c for c in [
+                        "work_date",
+                        "job_id",
+                        "vehicle_reg",
+                        "category",
+                        "job_outcome",
+                        status_col,
+                        "gross_value",
+                        "days_pending",
+                    ]
+                    if c in pending_14.columns
+                ]
+                temp14 = pending_14[show_cols].copy()
+                temp14 = temp14.sort_values("days_pending", ascending=False)
+                if "work_date" in temp14.columns:
+                    temp14["work_date"] = pd.to_datetime(temp14["work_date"], errors="coerce").dt.strftime("%Y-%m-%d")
+                if "gross_value" in temp14.columns:
+                    temp14["gross_value"] = pd.to_numeric(temp14["gross_value"], errors="coerce").fillna(0).round(2)
+                st.dataframe(temp14, use_container_width=True, hide_index=True)
+    else:
+        st.info("No pending jobs with valid work dates found.")
+else:
+    st.info("work_date column not found, so payment age tracking cannot be shown yet.")
+
+st.divider()
+
+# -------------------------
 # Full filtered editable table
 # -------------------------
 st.markdown("### Full Filtered Jobs Table")
