@@ -71,6 +71,18 @@ def _normalise_status(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
+def _exclude_withdraw_for_pay(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Exclude only withdrawn jobs from pay calculations.
+    All other statuses remain included.
+    """
+    out = _normalise_status(df)
+    status_col = _status_col(out)
+    if not status_col:
+        return out
+    return out[out[status_col] != "withdraw"].copy()
+
+
 def compute_pending_totals(df: pd.DataFrame) -> float:
     """
     Returns total outstanding money for jobs with status = pending.
@@ -90,15 +102,31 @@ def compute_pending_totals(df: pd.DataFrame) -> float:
     if pending_df.empty:
         return 0.0
 
-    pending_df["amount"] = _num(pending_df["amount"]) if "amount" in pending_df.columns else 0.0
-    pending_df["waiting_hours"] = _num(pending_df["waiting_hours"]) if "waiting_hours" in pending_df.columns else 0.0
+    pending_df["amount"] = (
+        _num(pending_df["amount"])
+        if "amount" in pending_df.columns
+        else pd.Series([0.0] * len(pending_df), index=pending_df.index)
+    )
+    pending_df["waiting_hours"] = (
+        _num(pending_df["waiting_hours"])
+        if "waiting_hours" in pending_df.columns
+        else pd.Series([0.0] * len(pending_df), index=pending_df.index)
+    )
     pending_df["waiting_amount"] = (
         _num(pending_df["waiting_amount"])
         if "waiting_amount" in pending_df.columns
         else pd.Series([0.0] * len(pending_df), index=pending_df.index)
     )
-    pending_df["expenses_amount"] = _num(pending_df["expenses_amount"]) if "expenses_amount" in pending_df.columns else 0.0
-    pending_df["add_pay"] = _num(pending_df["add_pay"]) if "add_pay" in pending_df.columns else 0.0
+    pending_df["expenses_amount"] = (
+        _num(pending_df["expenses_amount"])
+        if "expenses_amount" in pending_df.columns
+        else pd.Series([0.0] * len(pending_df), index=pending_df.index)
+    )
+    pending_df["add_pay"] = (
+        _num(pending_df["add_pay"])
+        if "add_pay" in pending_df.columns
+        else pd.Series([0.0] * len(pending_df), index=pending_df.index)
+    )
 
     total = (
         float(pending_df["amount"].sum())
@@ -120,10 +148,11 @@ def compute_totals(
     Central totals used by Daily/Weekly/Monthly.
 
     Logic:
+      - Withdraw jobs are excluded from pay totals
       - total_job_amount: sum(amount)
       - total_wait_hours: sum(waiting_hours)
       - total_wait_amount: sum(waiting_amount) if present else waiting_hours * waiting_rate
-      - total_add_pay: (NEW) sum(add_pay) + (legacy) Inspect & Collect auto-pay (hours * inspect_collect_rate)
+      - total_add_pay: sum(add_pay) + legacy Inspect & Collect auto-pay
       - driver_pay: job_amount + wait_amount + add_pay
       - total_received: driver_pay + expenses_amount (treated as reimbursed)
     """
@@ -138,21 +167,55 @@ def compute_totals(
             total_received=0.0,
         )
 
-    d = df.copy()
+    # Exclude withdrawn jobs from pay totals
+    d = _exclude_withdraw_for_pay(df)
+
+    if d.empty:
+        return Totals(
+            total_job_amount=0.0,
+            total_wait_hours=0.0,
+            total_wait_amount=0.0,
+            total_add_pay=0.0,
+            driver_pay=0.0,
+            total_expenses=0.0,
+            total_received=0.0,
+        )
 
     # Coerce numeric columns safely
-    d["amount"] = _num(d["amount"]) if "amount" in d.columns else 0.0
-    d["waiting_hours"] = _num(d["waiting_hours"]) if "waiting_hours" in d.columns else 0.0
-    d["waiting_amount"] = _num(d["waiting_amount"]) if "waiting_amount" in d.columns else pd.Series([0.0] * len(d), index=d.index)
-    d["expenses_amount"] = _num(d["expenses_amount"]) if "expenses_amount" in d.columns else 0.0
-    d["hours"] = _num(d["hours"]) if "hours" in d.columns else 0.0
-
-    # NEW: add_pay column (REAL DEFAULT 0)
-    d["add_pay"] = _num(d["add_pay"]) if "add_pay" in d.columns else 0.0
+    d["amount"] = (
+        _num(d["amount"])
+        if "amount" in d.columns
+        else pd.Series([0.0] * len(d), index=d.index)
+    )
+    d["waiting_hours"] = (
+        _num(d["waiting_hours"])
+        if "waiting_hours" in d.columns
+        else pd.Series([0.0] * len(d), index=d.index)
+    )
+    d["waiting_amount"] = (
+        _num(d["waiting_amount"])
+        if "waiting_amount" in d.columns
+        else pd.Series([0.0] * len(d), index=d.index)
+    )
+    d["expenses_amount"] = (
+        _num(d["expenses_amount"])
+        if "expenses_amount" in d.columns
+        else pd.Series([0.0] * len(d), index=d.index)
+    )
+    d["hours"] = (
+        _num(d["hours"])
+        if "hours" in d.columns
+        else pd.Series([0.0] * len(d), index=d.index)
+    )
+    d["add_pay"] = (
+        _num(d["add_pay"])
+        if "add_pay" in d.columns
+        else pd.Series([0.0] * len(d), index=d.index)
+    )
 
     # Totals
-    total_job_amount = float(pd.to_numeric(d["amount"], errors="coerce").fillna(0).sum())
-    total_wait_hours = float(pd.to_numeric(d["waiting_hours"], errors="coerce").fillna(0).sum())
+    total_job_amount = float(d["amount"].sum())
+    total_wait_hours = float(d["waiting_hours"].sum())
 
     # Waiting pay: prefer stored waiting_amount; if missing/zero for rows, compute from hours
     wr = float(waiting_rate or 0.0)
@@ -163,19 +226,19 @@ def compute_totals(
     else:
         total_wait_amount = float((d["waiting_hours"] * wr).sum())
 
-    # NEW: manual add pay from column
+    # Manual add pay from column
     total_add_pay_manual = float(d["add_pay"].sum())
 
-    # Legacy: Inspect & Collect auto add-pay (kept for backwards compatibility)
+    # Legacy: Inspect & Collect auto add-pay
     default_types = {"Inspect and Collect", "Inspect and Collect 2"}
     types = set(inspect_collect_types) if inspect_collect_types else default_types
 
     total_add_pay_auto = 0.0
     if "category" in d.columns and types and inspect_collect_rate:
-        mask = d["category"].astype(str).isin([str(x) for x in types])
+        mask = d["category"].fillna("").astype(str).isin([str(x) for x in types])
         total_add_pay_auto = float((d.loc[mask, "hours"] * float(inspect_collect_rate)).sum())
 
-    # Combine (so old Inspect&Collect still works + new Add Pay column works everywhere)
+    # Combine manual + legacy auto add-pay
     total_add_pay = float(total_add_pay_manual + total_add_pay_auto)
 
     # Driver pay and received
@@ -184,11 +247,11 @@ def compute_totals(
     total_received = driver_pay + total_expenses
 
     return Totals(
-        total_job_amount=total_job_amount,
-        total_wait_hours=total_wait_hours,
-        total_wait_amount=total_wait_amount,
-        total_add_pay=total_add_pay,
-        driver_pay=driver_pay,
-        total_expenses=total_expenses,
-        total_received=total_received,
+        total_job_amount=round(total_job_amount, 2),
+        total_wait_hours=round(total_wait_hours, 2),
+        total_wait_amount=round(total_wait_amount, 2),
+        total_add_pay=round(total_add_pay, 2),
+        driver_pay=round(driver_pay, 2),
+        total_expenses=round(total_expenses, 2),
+        total_received=round(total_received, 2),
     )
