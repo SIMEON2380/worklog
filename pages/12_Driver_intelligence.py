@@ -31,8 +31,6 @@ if df.empty:
 # -------------------------
 # Vehicle image mapping
 # -------------------------
-# Add more as you go.
-# Key = uppercase vehicle_description
 VEHICLE_IMAGE_MAP = {
     "FORD RANGER": "https://images.unsplash.com/photo-1503376780353-7e6692767b70?auto=format&fit=crop&w=1200&q=80",
     "VOLVO XC40 RECHARGE": "https://images.unsplash.com/photo-1494976388531-d1058494cdd8?auto=format&fit=crop&w=1200&q=80",
@@ -126,10 +124,6 @@ def top_avg_pay(frame: pd.DataFrame, group_col: str, top_n: int = 10) -> pd.Data
 
 
 def extract_uk_postcode(text: str) -> str:
-    """
-    Tries to extract a UK postcode from a text blob.
-    Returns uppercase postcode or empty string.
-    """
     if not text:
         return ""
 
@@ -165,11 +159,6 @@ def get_vehicle_image(vehicle_description: str) -> str:
 
 @st.cache_data(show_spinner=False, ttl=60 * 60 * 24)
 def geocode_postcodes(postcodes: list[str]) -> pd.DataFrame:
-    """
-    Uses postcodes.io bulk lookup.
-    Returns dataframe with:
-    postcode, latitude, longitude, region, admin_district, country
-    """
     clean = []
     seen = set()
 
@@ -215,7 +204,6 @@ def geocode_postcodes(postcodes: list[str]) -> pd.DataFrame:
                         }
                     )
         except Exception:
-            # Safe fallback: skip failed batch, keep app alive
             continue
 
     out = pd.DataFrame(rows)
@@ -268,15 +256,12 @@ df["_location_text"] = (
     safe_text(df["collection_from"]) + " " + safe_text(df["delivery_to"])
 ).str.strip()
 
-# Try to extract postcodes from collection and delivery
 df["collection_postcode"] = df["collection_from"].apply(extract_uk_postcode)
 df["delivery_postcode"] = df["delivery_to"].apply(extract_uk_postcode)
 
-# Best single postcode per job for quick stats/search
 df["job_postcode"] = df["delivery_postcode"]
 df.loc[df["job_postcode"] == "", "job_postcode"] = df.loc[df["job_postcode"] == "", "collection_postcode"]
 
-# Build postcode visit table from both collection and delivery
 collection_pc = df[["work_date", "driver_pay", "vehicle_description", "vehicle_reg", "collection_from", note_col, "collection_postcode"]].copy()
 collection_pc["postcode"] = collection_pc["collection_postcode"]
 collection_pc["source"] = "Collection"
@@ -378,7 +363,7 @@ else:
         image_url = get_vehicle_image(vehicle_name)
 
         with cols[idx % 3]:
-            st.image(image_url, use_container_width=True)
+            st.image(image_url, use_column_width=True)
             st.markdown(f"**{vehicle_name}**")
             st.caption(f"Jobs: {count}")
 
