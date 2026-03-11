@@ -1,5 +1,9 @@
-import streamlit as st
+import re
+from typing import Optional
+
 import pandas as pd
+import requests
+import streamlit as st
 
 from worklog.config import Config
 from worklog.db import make_db
@@ -25,6 +29,20 @@ if df.empty:
 
 
 # -------------------------
+# Vehicle image mapping
+# -------------------------
+# Add more as you go.
+# Key = uppercase vehicle_description
+VEHICLE_IMAGE_MAP = {
+    "FORD RANGER": "https://images.unsplash.com/photo-1503376780353-7e6692767b70?auto=format&fit=crop&w=1200&q=80",
+    "VOLVO XC40 RECHARGE": "https://images.unsplash.com/photo-1494976388531-d1058494cdd8?auto=format&fit=crop&w=1200&q=80",
+    "TESLA MODEL Y": "https://images.unsplash.com/photo-1560958089-b8a1929cea89?auto=format&fit=crop&w=1200&q=80",
+}
+
+FALLBACK_VEHICLE_IMAGE = "https://images.unsplash.com/photo-1492144534655-ae79c964c9d7?auto=format&fit=crop&w=1200&q=80"
+
+
+# -------------------------
 # Helpers
 # -------------------------
 def safe_text(series: pd.Series) -> pd.Series:
@@ -35,7 +53,7 @@ def safe_num(series: pd.Series) -> pd.Series:
     return pd.to_numeric(series, errors="coerce").fillna(0.0)
 
 
-def get_status_col(frame: pd.DataFrame) -> str | None:
+def get_status_col(frame: pd.DataFrame) -> Optional[str]:
     if "job_status" in frame.columns:
         return "job_status"
     if "status" in frame.columns:
@@ -107,6 +125,111 @@ def top_avg_pay(frame: pd.DataFrame, group_col: str, top_n: int = 10) -> pd.Data
     return out
 
 
+def extract_uk_postcode(text: str) -> str:
+    """
+    Tries to extract a UK postcode from a text blob.
+    Returns uppercase postcode or empty string.
+    """
+    if not text:
+        return ""
+
+    text = str(text).upper().strip()
+
+    pattern = r"\b([A-Z]{1,2}\d[A-Z\d]?\s*\d[A-Z]{2})\b"
+    match = re.search(pattern, text)
+    if not match:
+        return ""
+
+    postcode = match.group(1)
+    postcode = re.sub(r"\s+", "", postcode)
+    if len(postcode) > 3:
+        postcode = f"{postcode[:-3]} {postcode[-3:]}"
+    return postcode.strip()
+
+
+def outward_code(postcode: str) -> str:
+    postcode = str(postcode).strip().upper()
+    if not postcode:
+        return ""
+    return postcode.split(" ")[0]
+
+
+def normalize_vehicle_key(text: str) -> str:
+    return str(text).strip().upper()
+
+
+def get_vehicle_image(vehicle_description: str) -> str:
+    key = normalize_vehicle_key(vehicle_description)
+    return VEHICLE_IMAGE_MAP.get(key, FALLBACK_VEHICLE_IMAGE)
+
+
+@st.cache_data(show_spinner=False, ttl=60 * 60 * 24)
+def geocode_postcodes(postcodes: list[str]) -> pd.DataFrame:
+    """
+    Uses postcodes.io bulk lookup.
+    Returns dataframe with:
+    postcode, latitude, longitude, region, admin_district, country
+    """
+    clean = []
+    seen = set()
+
+    for p in postcodes:
+        p2 = str(p).strip().upper()
+        if p2 and p2 not in seen:
+            seen.add(p2)
+            clean.append(p2)
+
+    if not clean:
+        return pd.DataFrame(
+            columns=["postcode", "latitude", "longitude", "region", "admin_district", "country"]
+        )
+
+    rows = []
+    batch_size = 100
+
+    for i in range(0, len(clean), batch_size):
+        batch = clean[i:i + batch_size]
+        try:
+            resp = requests.post(
+                "https://api.postcodes.io/postcodes",
+                json={"postcodes": batch},
+                timeout=20,
+            )
+            resp.raise_for_status()
+            payload = resp.json()
+            results = payload.get("result", [])
+
+            for item in results:
+                query = (item or {}).get("query", "")
+                result = (item or {}).get("result") or {}
+
+                if result:
+                    rows.append(
+                        {
+                            "postcode": str(query).upper(),
+                            "latitude": result.get("latitude"),
+                            "longitude": result.get("longitude"),
+                            "region": result.get("region"),
+                            "admin_district": result.get("admin_district"),
+                            "country": result.get("country"),
+                        }
+                    )
+        except Exception:
+            # Safe fallback: skip failed batch, keep app alive
+            continue
+
+    out = pd.DataFrame(rows)
+    if out.empty:
+        return pd.DataFrame(
+            columns=["postcode", "latitude", "longitude", "region", "admin_district", "country"]
+        )
+
+    out = out.drop_duplicates(subset=["postcode"]).copy()
+    out["latitude"] = pd.to_numeric(out["latitude"], errors="coerce")
+    out["longitude"] = pd.to_numeric(out["longitude"], errors="coerce")
+    return out
+
+
 # -------------------------
 # Prep data
 # -------------------------
@@ -117,6 +240,7 @@ if "work_date" in df.columns:
     df["work_date"] = pd.to_datetime(df["work_date"], errors="coerce")
     df["weekday"] = df["work_date"].dt.day_name()
 else:
+    df["work_date"] = pd.NaT
     df["weekday"] = ""
 
 for col in [
@@ -140,21 +264,123 @@ df["category"] = safe_text(df["category"])
 note_col = "comments" if "comments" in df.columns else "notes"
 df[note_col] = safe_text(df[note_col])
 
-# combined searchable location text
 df["_location_text"] = (
     safe_text(df["collection_from"]) + " " + safe_text(df["delivery_to"])
 ).str.strip()
+
+# Try to extract postcodes from collection and delivery
+df["collection_postcode"] = df["collection_from"].apply(extract_uk_postcode)
+df["delivery_postcode"] = df["delivery_to"].apply(extract_uk_postcode)
+
+# Best single postcode per job for quick stats/search
+df["job_postcode"] = df["delivery_postcode"]
+df.loc[df["job_postcode"] == "", "job_postcode"] = df.loc[df["job_postcode"] == "", "collection_postcode"]
+
+# Build postcode visit table from both collection and delivery
+collection_pc = df[["work_date", "driver_pay", "vehicle_description", "vehicle_reg", "collection_from", note_col, "collection_postcode"]].copy()
+collection_pc["postcode"] = collection_pc["collection_postcode"]
+collection_pc["source"] = "Collection"
+
+delivery_pc = df[["work_date", "driver_pay", "vehicle_description", "vehicle_reg", "delivery_to", note_col, "delivery_postcode"]].copy()
+delivery_pc["postcode"] = delivery_pc["delivery_postcode"]
+delivery_pc["source"] = "Delivery"
+
+if "collection_from" not in delivery_pc.columns:
+    delivery_pc["collection_from"] = ""
+if "delivery_to" not in collection_pc.columns:
+    collection_pc["delivery_to"] = ""
+
+collection_pc["location_text"] = collection_pc.get("collection_from", "")
+delivery_pc["location_text"] = delivery_pc.get("delivery_to", "")
+
+postcode_visits = pd.concat(
+    [
+        collection_pc[["work_date", "driver_pay", "vehicle_description", "vehicle_reg", note_col, "postcode", "source", "location_text"]],
+        delivery_pc[["work_date", "driver_pay", "vehicle_description", "vehicle_reg", note_col, "postcode", "source", "location_text"]],
+    ],
+    ignore_index=True,
+)
+
+postcode_visits["postcode"] = safe_text(postcode_visits["postcode"])
+postcode_visits = postcode_visits[postcode_visits["postcode"] != ""].copy()
+postcode_visits["outward_code"] = postcode_visits["postcode"].apply(outward_code)
+
+unique_postcodes = sorted(postcode_visits["postcode"].dropna().astype(str).unique().tolist())
+geo_df = geocode_postcodes(unique_postcodes)
+
+postcode_map_df = postcode_visits.merge(geo_df, how="left", on="postcode")
+postcode_map_df = postcode_map_df.dropna(subset=["latitude", "longitude"]).copy()
 
 
 # -------------------------
 # KPIs
 # -------------------------
 c1, c2, c3, c4 = st.columns(4)
-
 c1.metric("Total Jobs", int(len(df)))
 c2.metric("Total Driver Pay", f"£{df['driver_pay'].sum():,.2f}")
 c3.metric("Unique Vehicles", int(df["vehicle_description"][df["vehicle_description"] != ""].nunique()))
 c4.metric("Unique Locations", int(df["_location_text"][df["_location_text"] != ""].nunique()))
+
+st.divider()
+
+# -------------------------
+# UK coverage / map
+# -------------------------
+st.markdown("### UK Coverage")
+
+m1, m2, m3, m4 = st.columns(4)
+m1.metric("Unique Postcodes", int(postcode_visits["postcode"].nunique()) if not postcode_visits.empty else 0)
+m2.metric("Outward Areas", int(postcode_visits["outward_code"].nunique()) if not postcode_visits.empty else 0)
+m3.metric("Mapped Postcodes", int(postcode_map_df["postcode"].nunique()) if not postcode_map_df.empty else 0)
+m4.metric("Regions Covered", int(postcode_map_df["region"].dropna().nunique()) if not postcode_map_df.empty else 0)
+
+if postcode_map_df.empty:
+    st.info("No mappable postcode data found yet.")
+else:
+    map_points = (
+        postcode_map_df[["postcode", "latitude", "longitude"]]
+        .drop_duplicates()
+        .rename(columns={"latitude": "lat", "longitude": "lon"})
+    )
+    st.map(map_points, use_container_width=True)
+
+    region_stats = (
+        postcode_map_df.dropna(subset=["region"])
+        .groupby("region")
+        .agg(
+            visits=("postcode", "size"),
+            unique_postcodes=("postcode", "nunique"),
+        )
+        .reset_index()
+        .sort_values(["visits", "unique_postcodes"], ascending=[False, False])
+    )
+
+    if not region_stats.empty:
+        st.markdown("#### Regions You Have Covered")
+        st.dataframe(region_stats, use_container_width=True, hide_index=True)
+
+st.divider()
+
+# -------------------------
+# Vehicle cards
+# -------------------------
+st.markdown("### Vehicles Driven")
+
+vehicle_cards = top_counts(df, "vehicle_description", top_n=12)
+
+if vehicle_cards.empty:
+    st.info("No vehicle data found.")
+else:
+    cols = st.columns(3)
+    for idx, row in vehicle_cards.iterrows():
+        vehicle_name = row["vehicle_description"]
+        count = int(row["count"])
+        image_url = get_vehicle_image(vehicle_name)
+
+        with cols[idx % 3]:
+            st.image(image_url, use_container_width=True)
+            st.markdown(f"**{vehicle_name}**")
+            st.caption(f"Jobs: {count}")
 
 st.divider()
 
@@ -186,13 +412,6 @@ with left:
         st.dataframe(job_types, use_container_width=True, hide_index=True)
 
 with right:
-    st.markdown("### Top Vehicle Regs")
-    regs = top_counts(df, "vehicle_reg", top_n=10)
-    if regs.empty:
-        st.info("No vehicle reg data found.")
-    else:
-        st.dataframe(regs, use_container_width=True, hide_index=True)
-
     st.markdown("### Most Common Delivery Locations")
     deliveries = top_counts(df, "delivery_to", top_n=10)
     if deliveries.empty:
@@ -242,12 +461,22 @@ search_term = st.text_input(
 
 if search_term:
     s = search_term.lower()
+    search_postcode = extract_uk_postcode(search_term)
 
     hits = df[
         df["collection_from"].str.lower().str.contains(s, na=False)
         | df["delivery_to"].str.lower().str.contains(s, na=False)
         | df["_location_text"].str.lower().str.contains(s, na=False)
     ].copy()
+
+    if search_postcode:
+        postcode_hits = df[
+            (df["collection_postcode"] == search_postcode)
+            | (df["delivery_postcode"] == search_postcode)
+            | (df["job_postcode"] == search_postcode)
+        ].copy()
+        if not postcode_hits.empty:
+            hits = pd.concat([hits, postcode_hits], ignore_index=True).drop_duplicates()
 
     if hits.empty:
         st.warning("No previous jobs found for that place.")
@@ -283,6 +512,8 @@ if search_term:
             "vehicle_reg",
             "collection_from",
             "delivery_to",
+            "collection_postcode",
+            "delivery_postcode",
             "category",
             "driver_pay",
             note_col,
@@ -291,9 +522,15 @@ if search_term:
 
         display_hits = hits[show_cols].copy()
         if "work_date" in display_hits.columns:
-            display_hits["work_date"] = pd.to_datetime(display_hits["work_date"], errors="coerce").dt.strftime("%Y-%m-%d")
+            display_hits["work_date"] = pd.to_datetime(
+                display_hits["work_date"], errors="coerce"
+            ).dt.strftime("%Y-%m-%d")
         if "driver_pay" in display_hits.columns:
-            display_hits["driver_pay"] = pd.to_numeric(display_hits["driver_pay"], errors="coerce").fillna(0).round(2)
+            display_hits["driver_pay"] = (
+                pd.to_numeric(display_hits["driver_pay"], errors="coerce")
+                .fillna(0)
+                .round(2)
+            )
 
         st.markdown("#### Previous Jobs For This Place")
         st.dataframe(display_hits, use_container_width=True, hide_index=True)
