@@ -1,0 +1,23 @@
+name: Deploy Worklog Test
+
+on:
+  push:
+    branches: ["main"]
+
+jobs:
+  deploy-test:
+    runs-on: self-hosted
+    steps:
+      - name: Deploy latest main to test folder
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cd /home/simeon/worklog-test
+          git fetch origin main
+          git reset --hard origin/main
+
+      - name: Restart worklog test service
+        shell: bash
+        run: |
+          sudo -n /usr/bin/systemctl restart worklog-test.service
+          sudo -n /usr/bin/systemctl status worklog-test.service --no-pager
