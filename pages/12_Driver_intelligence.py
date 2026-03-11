@@ -435,6 +435,47 @@ with right:
 st.divider()
 
 # -------------------------
+# Highest earning jobs
+# -------------------------
+st.markdown("### Highest Earning Jobs")
+
+top_jobs = df.sort_values("driver_pay", ascending=False).head(5).copy()
+
+if top_jobs.empty:
+    st.info("No job earnings data available.")
+else:
+    display_cols = [
+        "work_date",
+        "vehicle_description",
+        "vehicle_reg",
+        "collection_from",
+        "delivery_to",
+        "category",
+        "driver_pay",
+    ]
+    display_cols = [c for c in display_cols if c in top_jobs.columns]
+
+    if "work_date" in top_jobs.columns:
+        top_jobs["work_date"] = pd.to_datetime(
+            top_jobs["work_date"], errors="coerce"
+        ).dt.strftime("%Y-%m-%d")
+
+    if "driver_pay" in top_jobs.columns:
+        top_jobs["driver_pay"] = (
+            pd.to_numeric(top_jobs["driver_pay"], errors="coerce")
+            .fillna(0)
+            .round(2)
+        )
+
+    st.dataframe(
+        top_jobs[display_cols],
+        use_container_width=True,
+        hide_index=True,
+    )
+
+st.divider()
+
+# -------------------------
 # Place / postcode memory lookup
 # -------------------------
 st.markdown("### Have I been here before?")
