@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.pyc
+
+# Virtual env
+.venv/
+
+# Streamlit
+.streamlit/
+
+# Logs
+*.log
+
+# Database
+*.db
+*.sqlite
+
+# Data / exports
+*.csv
+*.xlsx
+*.xlsb
+
+# Local scripts
+sync_excel_to_worklog.py
+missing_jobs.txt.streamlit/secrets.toml
+missing_jobs.txt
