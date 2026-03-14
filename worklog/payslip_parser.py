@@ -37,32 +37,50 @@ def parse_payslip_lines(text):
     """
     Parse payslip text into:
     - jobs_df: rows with a job_id
-    - other_df: rows without a job_id but with a recognised pay code
+    - other_df: rows without a job_id but with a recognised pay code / deduction
     """
     rows = []
+
+    if not text or not str(text).strip():
+        empty_cols = [
+            "work_date",
+            "job_id",
+            "description",
+            "pay_code",
+            "mapped_field",
+            "amount",
+            "line_type",
+        ]
+        empty_df = pd.DataFrame(columns=empty_cols)
+        return empty_df.copy(), empty_df.copy()
+
     lines = [line.strip() for line in text.splitlines() if line.strip()]
 
-    # More forgiving regex:
-    # - allows extra text between date and job id
-    # - looks for job IDs with at least 7 digits
-    # - expects money like 12.34
+    # Actual BCA extracted line format:
+    # 7002057_JOBS 11887417 JOB 0.0004/02/2026 NN7 4HQ - NN5 4WJ
     job_pattern = re.compile(
-        r"(\d{2}/\d{2}/\d{4}).*?(\d{7,})\s+(.+?)\s+(JOB|INTRAV|WT/NC|RGNWGT|ADDPAY)\s+(-?\d+\.\d{2})"
+        r"^\S+\s+(\d{7,8})\s+"
+        r"(JOB|INTRAV|WT/NC|RGNWGT|ADDPAY)\s+"
+        r"(-?\d+\.\d{2})(\d{2}/\d{2}/\d{4})\s+"
+        r"(.+)$"
     )
 
+    # Deductions / other lines:
+    # Deduction -5.0013/03/2026 ADMINISTRATION CHARGE w/e 13/03/2026
     other_pattern = re.compile(
-        r"(\d{2}/\d{2}/\d{4}).*?(.+?)\s+(JOB|INTRAV|WT/NC|RGNWGT|ADDPAY)\s+(-?\d+\.\d{2})"
+        r"^([A-Za-z][A-Za-z\s/-]*)\s+"
+        r"(-?\d+\.\d{2})(\d{2}/\d{2}/\d{4})\s+"
+        r"(.+)$"
     )
 
     for line in lines:
-        match = job_pattern.search(line)
-
+        match = job_pattern.match(line)
         if match:
-            work_date = pd.to_datetime(match.group(1), dayfirst=True, errors="coerce")
-            job_id = str(match.group(2)).strip()
-            description = match.group(3).strip()
-            pay_code = match.group(4).strip()
-            amount = float(match.group(5))
+            job_id = str(match.group(1)).strip()
+            pay_code = match.group(2).strip()
+            amount = float(match.group(3))
+            work_date = pd.to_datetime(match.group(4), dayfirst=True, errors="coerce")
+            description = match.group(5).strip()
 
             rows.append(
                 {
@@ -77,20 +95,20 @@ def parse_payslip_lines(text):
             )
             continue
 
-        match = other_pattern.search(line)
+        match = other_pattern.match(line)
         if match:
-            work_date = pd.to_datetime(match.group(1), dayfirst=True, errors="coerce")
-            description = match.group(2).strip()
-            pay_code = match.group(3).strip()
-            amount = float(match.group(4))
+            label = match.group(1).strip()
+            amount = float(match.group(2))
+            work_date = pd.to_datetime(match.group(3), dayfirst=True, errors="coerce")
+            description = match.group(4).strip()
 
             rows.append(
                 {
                     "work_date": work_date,
                     "job_id": "",
-                    "description": description,
-                    "pay_code": pay_code,
-                    "mapped_field": PAY_CODE_MAP.get(pay_code),
+                    "description": f"{label} - {description}",
+                    "pay_code": "OTHER",
+                    "mapped_field": None,
                     "amount": amount,
                     "line_type": "other",
                 }
