@@ -40,21 +40,18 @@ def parse_payslip_lines(text):
     - other_df: rows without a job_id but with a recognised pay code
     """
     rows = []
-
     lines = [line.strip() for line in text.splitlines() if line.strip()]
 
-    # Main job-linked pattern
-    # Example:
-    # 14/03/2026 ABC 11808485 Some description JOB 50.00
+    # More forgiving regex:
+    # - allows extra text between date and job id
+    # - looks for job IDs with at least 7 digits
+    # - expects money like 12.34
     job_pattern = re.compile(
-        r"(\d{2}/\d{2}/\d{4})\s+\S+\s+(\d+)\s+(.+?)\s+(JOB|INTRAV|WT/NC|RGNWGT|ADDPAY)\s+(-?\d+\.\d+)"
+        r"(\d{2}/\d{2}/\d{4}).*?(\d{7,})\s+(.+?)\s+(JOB|INTRAV|WT/NC|RGNWGT|ADDPAY)\s+(-?\d+\.\d{2})"
     )
 
-    # Other payslip items with no job id
-    # Example:
-    # 14/03/2026 ABC Something else ADDPAY 10.00
     other_pattern = re.compile(
-        r"(\d{2}/\d{2}/\d{4})\s+\S+\s+(.+?)\s+(JOB|INTRAV|WT/NC|RGNWGT|ADDPAY)\s+(-?\d+\.\d+)"
+        r"(\d{2}/\d{2}/\d{4}).*?(.+?)\s+(JOB|INTRAV|WT/NC|RGNWGT|ADDPAY)\s+(-?\d+\.\d{2})"
     )
 
     for line in lines:
@@ -80,7 +77,6 @@ def parse_payslip_lines(text):
             )
             continue
 
-        # Fallback for non-job lines
         match = other_pattern.search(line)
         if match:
             work_date = pd.to_datetime(match.group(1), dayfirst=True, errors="coerce")
@@ -115,11 +111,8 @@ def parse_payslip_lines(text):
         empty_df = pd.DataFrame(columns=empty_cols)
         return empty_df.copy(), empty_df.copy()
 
-    jobs_df = df[df["line_type"] == "job"].copy()
-    other_df = df[df["line_type"] == "other"].copy()
-
-    jobs_df = jobs_df.reset_index(drop=True)
-    other_df = other_df.reset_index(drop=True)
+    jobs_df = df[df["line_type"] == "job"].copy().reset_index(drop=True)
+    other_df = df[df["line_type"] == "other"].copy().reset_index(drop=True)
 
     return jobs_df, other_df
 
@@ -183,7 +176,11 @@ def summarise_jobs(jobs_df):
     ]
 
     for col in money_cols:
-        summary_df[col] = pd.to_numeric(summary_df[col], errors="coerce").fillna(0.0).round(2)
+        summary_df[col] = (
+            pd.to_numeric(summary_df[col], errors="coerce")
+            .fillna(0.0)
+            .round(2)
+        )
 
     summary_df = summary_df.sort_values(
         ["work_date", "job_id"], ascending=[True, True]
@@ -201,7 +198,7 @@ def build_db_reconciliation(summary_df, db_df):
     - WT/NC = waiting_time
     - RGNWGT = regional_waiting
     - regional_waiting is shown from payslip but not included in DB expected total
-      because you said you do not currently store RGNWGT in the database.
+      because you do not currently store RGNWGT in the database.
     """
     if summary_df is None or summary_df.empty:
         return pd.DataFrame()
@@ -224,7 +221,9 @@ def build_db_reconciliation(summary_df, db_df):
 
     if "expenses_amount" not in db.columns:
         if "expenses" in db.columns:
-            db["expenses_amount"] = pd.to_numeric(db["expenses"], errors="coerce").fillna(0.0)
+            db["expenses_amount"] = pd.to_numeric(
+                db["expenses"], errors="coerce"
+            ).fillna(0.0)
         else:
             db["expenses_amount"] = 0.0
 
@@ -232,8 +231,12 @@ def build_db_reconciliation(summary_df, db_df):
         db["waiting_time_amount"] = 0.0
 
     db["amount"] = pd.to_numeric(db["amount"], errors="coerce").fillna(0.0)
-    db["expenses_amount"] = pd.to_numeric(db["expenses_amount"], errors="coerce").fillna(0.0)
-    db["waiting_time_amount"] = pd.to_numeric(db["waiting_time_amount"], errors="coerce").fillna(0.0)
+    db["expenses_amount"] = pd.to_numeric(
+        db["expenses_amount"], errors="coerce"
+    ).fillna(0.0)
+    db["waiting_time_amount"] = pd.to_numeric(
+        db["waiting_time_amount"], errors="coerce"
+    ).fillna(0.0)
 
     db_grouped = (
         db.groupby("job_id", as_index=False)
