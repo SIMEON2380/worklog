@@ -1,3 +1,4 @@
+import re
 import streamlit as st
 import pandas as pd
 
@@ -5,7 +6,11 @@ from worklog.config import Config
 from worklog.db import make_db
 from worklog.auth import ensure_default_user
 from worklog.ui import require_login
-from worklog.payslip_parser import parse_uploaded_payslip, build_db_reconciliation
+from worklog.payslip_parser import (
+    extract_text_from_pdf,
+    parse_uploaded_payslip,
+    build_db_reconciliation,
+)
 
 cfg = Config()
 DB = make_db(cfg)
@@ -24,6 +29,58 @@ if uploaded_file is None:
     st.info("Upload a payslip PDF to begin.")
     st.stop()
 
+show_debug = st.checkbox("Show debug output", value=True)
+
+# -------------------------
+# Debug extracted text
+# -------------------------
+try:
+    extracted_text = extract_text_from_pdf(uploaded_file)
+except Exception as e:
+    st.error(f"Failed to extract text from PDF: {e}")
+    st.stop()
+
+if not extracted_text or not extracted_text.strip():
+    st.warning("No text could be extracted from this PDF.")
+    st.stop()
+
+# Clean text a bit so you can compare raw vs parser-friendly version
+cleaned_text = re.sub(r"[ \t]+", " ", extracted_text)
+cleaned_text = re.sub(r"\r", "\n", cleaned_text)
+cleaned_text = re.sub(r"\n+", "\n", cleaned_text).strip()
+
+preview_lines = [line.strip() for line in extracted_text.splitlines() if line.strip()]
+
+if show_debug:
+    st.markdown("### Debug Extracted Text")
+    st.text_area(
+        "Raw PDF text preview",
+        extracted_text[:5000],
+        height=250,
+    )
+
+    st.markdown("### Debug Cleaned Text")
+    st.text_area(
+        "Cleaned text preview",
+        cleaned_text[:5000],
+        height=250,
+    )
+
+    st.markdown("### Debug First Extracted Lines")
+    if preview_lines:
+        debug_lines_df = pd.DataFrame(
+            {
+                "line_no": range(1, min(len(preview_lines), 40) + 1),
+                "text": preview_lines[:40],
+            }
+        )
+        st.dataframe(debug_lines_df, use_container_width=True)
+    else:
+        st.info("No extracted lines to preview.")
+
+# Reset file pointer before parsing again
+uploaded_file.seek(0)
+
 try:
     jobs_df, other_df, summary_df = parse_uploaded_payslip(uploaded_file)
 except Exception as e:
@@ -33,6 +90,11 @@ except Exception as e:
 st.markdown("### Payslip Summary by Job")
 if summary_df.empty:
     st.warning("No job lines were found in the payslip.")
+    if show_debug:
+        st.info(
+            "Check the debug text above. If the payslip rows are visible there, "
+            "the parser regex needs adjusting to the actual PDF layout."
+        )
 else:
     st.dataframe(summary_df, use_container_width=True)
 
@@ -48,7 +110,9 @@ if other_df.empty:
 else:
     st.dataframe(other_df, use_container_width=True)
 
+# -------------------------
 # Database reconciliation
+# -------------------------
 db_df = DB["read_all"]()
 
 st.markdown("### Reconciliation Result")
@@ -64,14 +128,11 @@ if db_df is None or db_df.empty:
 db_df = db_df.copy()
 db_df["job_id"] = db_df["job_id"].astype(str).str.strip()
 
-# Keep this simple and safe.
-# Main amount comes from DB["amount"].
-# Expenses use expenses_amount if present, otherwise fallback to expenses if numeric.
-# Waiting time stays 0 unless you already store a money column for it.
-
 if "expenses_amount" not in db_df.columns:
     if "expenses" in db_df.columns:
-        db_df["expenses_amount"] = pd.to_numeric(db_df["expenses"], errors="coerce").fillna(0.0)
+        db_df["expenses_amount"] = pd.to_numeric(
+            db_df["expenses"], errors="coerce"
+        ).fillna(0.0)
     else:
         db_df["expenses_amount"] = 0.0
 
