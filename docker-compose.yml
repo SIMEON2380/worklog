@@ -1,0 +1,35 @@
+version: "3.9"
+
+services:
+
+  worklog1:
+    build: .
+    container_name: worklog1
+    command: streamlit run app.py --server.address=0.0.0.0 --server.port=8501
+    environment:
+      - WORKLOG_DB_DIR=/data
+    volumes:
+      - /var/lib/worklog:/data
+    restart: always
+
+  worklog2:
+    build: .
+    container_name: worklog2
+    command: streamlit run app.py --server.address=0.0.0.0 --server.port=8501 --server.baseUrlPath=docker
+    environment:
+      - WORKLOG_DB_DIR=/data
+    volumes:
+      - /var/lib/worklog:/data
+    restart: always
+
+  nginx:
+    image: nginx:latest
+    container_name: worklog-nginx
+    ports:
+      - "8503:80"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - worklog1
+      - worklog2
+    restart: always
