@@ -1,4 +1,6 @@
 import re
+from io import BytesIO
+
 import streamlit as st
 import pandas as pd
 
@@ -44,7 +46,6 @@ if not extracted_text or not extracted_text.strip():
     st.warning("No text could be extracted from this PDF.")
     st.stop()
 
-# Clean text a bit so you can compare raw vs parser-friendly version
 cleaned_text = re.sub(r"[ \t]+", " ", extracted_text)
 cleaned_text = re.sub(r"\r", "\n", cleaned_text)
 cleaned_text = re.sub(r"\n+", "\n", cleaned_text).strip()
@@ -87,6 +88,9 @@ except Exception as e:
     st.error(f"Failed to parse payslip PDF: {e}")
     st.stop()
 
+# -------------------------
+# Payslip Summary + Insights
+# -------------------------
 st.markdown("### Payslip Summary by Job")
 if summary_df.empty:
     st.warning("No job lines were found in the payslip.")
@@ -96,7 +100,77 @@ if summary_df.empty:
             "the parser regex needs adjusting to the actual PDF layout."
         )
 else:
+    # Make sure numeric fields are numeric
+    for col in [
+        "job_amount",
+        "expenses",
+        "waiting_time",
+        "regional_waiting",
+        "addpay",
+        "total_paid",
+    ]:
+        if col in summary_df.columns:
+            summary_df[col] = pd.to_numeric(summary_df[col], errors="coerce").fillna(0.0)
+
+    other_total = 0.0
+    if not other_df.empty and "amount" in other_df.columns:
+        other_df["amount"] = pd.to_numeric(other_df["amount"], errors="coerce").fillna(0.0)
+        other_total = float(other_df["amount"].sum())
+
+    payslip_total = float(summary_df["total_paid"].sum())
+    grand_total = payslip_total + other_total
+
+    # Summary metrics
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Jobs in payslip", int(summary_df["job_id"].nunique()))
+    c2.metric("Payslip total", f"£{payslip_total:.2f}")
+    c3.metric("Other items total", f"£{other_total:.2f}")
+    c4.metric("Grand total", f"£{grand_total:.2f}")
+
+    c5, c6, c7, c8 = st.columns(4)
+    c5.metric("Job pay total", f"£{summary_df['job_amount'].sum():.2f}")
+    c6.metric("Expenses total", f"£{summary_df['expenses'].sum():.2f}")
+    c7.metric("Waiting total", f"£{summary_df['waiting_time'].sum():.2f}")
+    c8.metric("Regional waiting", f"£{summary_df['regional_waiting'].sum():.2f}")
+
+    # Payslip Insights
+    st.markdown("### Payslip Insights")
+
+    highest_paid_job_id = "-"
+    highest_paid_job_value = 0.0
+    zero_paid_jobs_count = 0
+    addpay_total = 0.0
+
+    if not summary_df.empty:
+        highest_paid_row = summary_df.sort_values("total_paid", ascending=False).iloc[0]
+        highest_paid_job_id = str(highest_paid_row["job_id"])
+        highest_paid_job_value = float(highest_paid_row["total_paid"])
+        zero_paid_jobs_count = int((summary_df["job_amount"] == 0).sum())
+        addpay_total = float(summary_df["addpay"].sum())
+
+    i1, i2, i3, i4, i5 = st.columns(5)
+    i1.metric("Highest paid job", highest_paid_job_id)
+    i2.metric("Highest job total", f"£{highest_paid_job_value:.2f}")
+    i3.metric("Waiting paid", f"£{summary_df['waiting_time'].sum():.2f}")
+    i4.metric("Addpay total", f"£{addpay_total:.2f}")
+    i5.metric("Jobs paid £0", zero_paid_jobs_count)
+
     st.dataframe(summary_df, use_container_width=True)
+
+    # Export summary to Excel
+    summary_output = BytesIO()
+    with pd.ExcelWriter(summary_output, engine="openpyxl") as writer:
+        summary_df.to_excel(writer, index=False, sheet_name="Payslip Summary")
+        if not other_df.empty:
+            other_df.to_excel(writer, index=False, sheet_name="Other Payslip Items")
+    summary_output.seek(0)
+
+    st.download_button(
+        label="Download payslip summary (Excel)",
+        data=summary_output.getvalue(),
+        file_name="payslip_summary.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
 
 st.markdown("### Raw Job Lines")
 if jobs_df.empty:
@@ -157,3 +231,33 @@ if show_only_issues:
     display_df = display_df[display_df["status"] != "Matched"].copy()
 
 st.dataframe(display_df, use_container_width=True)
+
+# -------------------------
+# Export reconciliation
+# -------------------------
+st.markdown("### Export Reconciliation")
+
+csv_data = recon_df.to_csv(index=False).encode("utf-8")
+
+st.download_button(
+    label="Download reconciliation report (CSV)",
+    data=csv_data,
+    file_name="payslip_reconciliation.csv",
+    mime="text/csv",
+)
+
+excel_output = BytesIO()
+with pd.ExcelWriter(excel_output, engine="openpyxl") as writer:
+    recon_df.to_excel(writer, index=False, sheet_name="Reconciliation")
+    if not summary_df.empty:
+        summary_df.to_excel(writer, index=False, sheet_name="Payslip Summary")
+    if not other_df.empty:
+        other_df.to_excel(writer, index=False, sheet_name="Other Payslip Items")
+excel_output.seek(0)
+
+st.download_button(
+    label="Download reconciliation report (Excel)",
+    data=excel_output.getvalue(),
+    file_name="payslip_reconciliation.xlsx",
+    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+)
