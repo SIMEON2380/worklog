@@ -233,6 +233,83 @@ if show_only_issues:
 st.dataframe(display_df, use_container_width=True)
 
 # -------------------------
+# Jobs paid but not logged
+# -------------------------
+st.markdown("### Jobs Paid but Not Logged in Worklog")
+
+payslip_jobs = set(summary_df["job_id"].astype(str).str.strip())
+db_jobs = set(db_df["job_id"].astype(str).str.strip())
+
+missing_in_db_jobs = payslip_jobs - db_jobs
+
+a1, a2 = st.columns(2)
+a1.metric("Paid but not logged", int(len(missing_in_db_jobs)))
+a2.metric("Logged but not paid", int(len(db_jobs - payslip_jobs)))
+
+if not missing_in_db_jobs:
+    st.success("All payslip jobs exist in your database.")
+else:
+    missing_in_db_df = summary_df[summary_df["job_id"].astype(str).str.strip().isin(missing_in_db_jobs)].copy()
+    missing_in_db_df = missing_in_db_df.sort_values(["work_date", "job_id"]).reset_index(drop=True)
+
+    st.warning(f"{len(missing_in_db_df)} job(s) were paid but not found in your database.")
+    st.dataframe(missing_in_db_df, use_container_width=True)
+
+    missing_in_db_csv = missing_in_db_df.to_csv(index=False).encode("utf-8")
+    st.download_button(
+        label="Download paid but not logged report (CSV)",
+        data=missing_in_db_csv,
+        file_name="paid_but_not_logged.csv",
+        mime="text/csv",
+    )
+
+# -------------------------
+# Jobs logged but missing from payslip
+# -------------------------
+st.markdown("### Jobs Logged in Worklog but Missing from Payslip")
+
+missing_from_payslip_jobs = db_jobs - payslip_jobs
+
+if not missing_from_payslip_jobs:
+    st.success("All logged jobs were found in the payslip.")
+else:
+    missing_from_payslip_df = db_df[
+        db_df["job_id"].astype(str).str.strip().isin(missing_from_payslip_jobs)
+    ].copy()
+
+    preferred_cols = [
+        "job_id",
+        "work_date",
+        "category",
+        "amount",
+        "expenses_amount",
+        "waiting_time_amount",
+        "job_status",
+        "vehicle_reg",
+        "vehicle_description",
+        "notes",
+    ]
+    existing_cols = [col for col in preferred_cols if col in missing_from_payslip_df.columns]
+    if existing_cols:
+        missing_from_payslip_df = missing_from_payslip_df[existing_cols]
+
+    if "work_date" in missing_from_payslip_df.columns:
+        missing_from_payslip_df = missing_from_payslip_df.sort_values(["work_date", "job_id"]).reset_index(drop=True)
+    else:
+        missing_from_payslip_df = missing_from_payslip_df.sort_values(["job_id"]).reset_index(drop=True)
+
+    st.warning(f"{len(missing_from_payslip_df)} job(s) exist in your database but were not found in the payslip.")
+    st.dataframe(missing_from_payslip_df, use_container_width=True)
+
+    missing_from_payslip_csv = missing_from_payslip_df.to_csv(index=False).encode("utf-8")
+    st.download_button(
+        label="Download logged but not paid report (CSV)",
+        data=missing_from_payslip_csv,
+        file_name="logged_but_not_paid.csv",
+        mime="text/csv",
+    )
+
+# -------------------------
 # Export reconciliation
 # -------------------------
 st.markdown("### Export Reconciliation")
@@ -253,6 +330,10 @@ with pd.ExcelWriter(excel_output, engine="openpyxl") as writer:
         summary_df.to_excel(writer, index=False, sheet_name="Payslip Summary")
     if not other_df.empty:
         other_df.to_excel(writer, index=False, sheet_name="Other Payslip Items")
+    if missing_in_db_jobs:
+        missing_in_db_df.to_excel(writer, index=False, sheet_name="Paid Not Logged")
+    if missing_from_payslip_jobs:
+        missing_from_payslip_df.to_excel(writer, index=False, sheet_name="Logged Not Paid")
 excel_output.seek(0)
 
 st.download_button(
