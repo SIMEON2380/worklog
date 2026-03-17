@@ -10,8 +10,10 @@ def make_db(cfg):
     TABLE = cfg.TABLE_NAME
 
     def get_conn() -> sqlite3.Connection:
-        conn = sqlite3.connect(DB_PATH)
+        conn = sqlite3.connect(DB_PATH, timeout=30)
         conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA journal_mode=WAL;")
+        conn.execute("PRAGMA busy_timeout = 30000;")
         return conn
 
     def get_columns(cur: sqlite3.Cursor) -> set[str]:
@@ -49,56 +51,58 @@ def make_db(cfg):
     # -------------------------
     def ensure_schema() -> None:
         conn = get_conn()
-        cur = conn.cursor()
+        try:
+            cur = conn.cursor()
 
-        cur.execute(
-            f"""
-            CREATE TABLE IF NOT EXISTS {TABLE} (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                work_date TEXT,
-                description TEXT,
-                hours REAL,
-                amount REAL,
-                job_id TEXT,
-                category TEXT,
-                job_status TEXT,
-                waiting_time TEXT,
-                waiting_hours REAL,
-                waiting_amount REAL,
-                created_at TEXT,
-                vehicle_description TEXT,
-                vehicle_reg TEXT,
-                collection_from TEXT,
-                delivery_to TEXT,
-                job_expenses TEXT,
-                expenses_amount REAL,
-                auth_code TEXT,
-                comments TEXT,
-                postcode TEXT,
-                customer_name TEXT,
-                site_address TEXT,
-                updated_at TEXT,
-                status TEXT,
-                add_pay REAL DEFAULT 0,
-                paid_date TEXT,
-                job_outcome TEXT
+            cur.execute(
+                f"""
+                CREATE TABLE IF NOT EXISTS {TABLE} (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    work_date TEXT,
+                    description TEXT,
+                    hours REAL,
+                    amount REAL,
+                    job_id TEXT,
+                    category TEXT,
+                    job_status TEXT,
+                    waiting_time TEXT,
+                    waiting_hours REAL,
+                    waiting_amount REAL,
+                    created_at TEXT,
+                    vehicle_description TEXT,
+                    vehicle_reg TEXT,
+                    collection_from TEXT,
+                    delivery_to TEXT,
+                    job_expenses TEXT,
+                    expenses_amount REAL,
+                    auth_code TEXT,
+                    comments TEXT,
+                    postcode TEXT,
+                    customer_name TEXT,
+                    site_address TEXT,
+                    updated_at TEXT,
+                    status TEXT,
+                    add_pay REAL DEFAULT 0,
+                    paid_date TEXT,
+                    job_outcome TEXT
+                )
+                """
             )
-            """
-        )
 
-        cols = get_columns(cur)
+            cols = get_columns(cur)
 
-        if "add_pay" not in cols:
-            cur.execute(f"ALTER TABLE {TABLE} ADD COLUMN add_pay REAL DEFAULT 0")
+            if "add_pay" not in cols:
+                cur.execute(f"ALTER TABLE {TABLE} ADD COLUMN add_pay REAL DEFAULT 0")
 
-        if "paid_date" not in cols:
-            cur.execute(f"ALTER TABLE {TABLE} ADD COLUMN paid_date TEXT")
+            if "paid_date" not in cols:
+                cur.execute(f"ALTER TABLE {TABLE} ADD COLUMN paid_date TEXT")
 
-        if "job_outcome" not in cols:
-            cur.execute(f"ALTER TABLE {TABLE} ADD COLUMN job_outcome TEXT")
+            if "job_outcome" not in cols:
+                cur.execute(f"ALTER TABLE {TABLE} ADD COLUMN job_outcome TEXT")
 
-        conn.commit()
-        conn.close()
+            conn.commit()
+        finally:
+            conn.close()
 
     # -------------------------
     # Read all rows
@@ -119,45 +123,46 @@ def make_db(cfg):
             return None
 
         conn = get_conn()
-        cur = conn.cursor()
+        try:
+            cur = conn.cursor()
 
-        cols = get_columns(cur)
-        safe = {k: v for k, v in data.items() if k in cols and k != "id"}
+            cols = get_columns(cur)
+            safe = {k: v for k, v in data.items() if k in cols and k != "id"}
 
-        now = datetime.utcnow().isoformat()
+            now = datetime.utcnow().isoformat()
 
-        if "created_at" in cols and "created_at" not in safe:
-            safe["created_at"] = now
-        if "updated_at" in cols and "updated_at" not in safe:
-            safe["updated_at"] = now
+            if "created_at" in cols and "created_at" not in safe:
+                safe["created_at"] = now
+            if "updated_at" in cols and "updated_at" not in safe:
+                safe["updated_at"] = now
 
-        if "job_outcome" in cols and not safe.get("job_outcome"):
-            safe["job_outcome"] = "Completed"
+            if "job_outcome" in cols and not safe.get("job_outcome"):
+                safe["job_outcome"] = "Completed"
 
-        if "paid_date" in cols:
-            status_value = safe.get("job_status", safe.get("status"))
-            if normalize_status(status_value) == "paid":
-                if not safe.get("paid_date"):
-                    safe["paid_date"] = today_iso()
-            else:
-                if "paid_date" not in safe:
-                    safe["paid_date"] = None
+            if "paid_date" in cols:
+                status_value = safe.get("job_status", safe.get("status"))
+                if normalize_status(status_value) == "paid":
+                    if not safe.get("paid_date"):
+                        safe["paid_date"] = today_iso()
+                else:
+                    if "paid_date" not in safe:
+                        safe["paid_date"] = None
 
-        if not safe:
+            if not safe:
+                return None
+
+            keys = list(safe.keys())
+            placeholders = ", ".join(["?"] * len(keys))
+            sql = f"INSERT INTO {TABLE} ({', '.join(keys)}) VALUES ({placeholders})"
+            params = [safe[k] for k in keys]
+
+            cur.execute(sql, params)
+            new_id = cur.lastrowid
+
+            conn.commit()
+            return new_id
+        finally:
             conn.close()
-            return None
-
-        keys = list(safe.keys())
-        placeholders = ", ".join(["?"] * len(keys))
-        sql = f"INSERT INTO {TABLE} ({', '.join(keys)}) VALUES ({placeholders})"
-        params = [safe[k] for k in keys]
-
-        cur.execute(sql, params)
-        new_id = cur.lastrowid
-
-        conn.commit()
-        conn.close()
-        return new_id
 
     # -------------------------
     # Update row
@@ -167,55 +172,57 @@ def make_db(cfg):
             return
 
         conn = get_conn()
-        cur = conn.cursor()
+        try:
+            cur = conn.cursor()
 
-        cols = get_columns(cur)
-        safe = {k: v for k, v in diffs.items() if k in cols and k != "id"}
+            cols = get_columns(cur)
+            safe = {k: v for k, v in diffs.items() if k in cols and k != "id"}
 
-        if not safe:
+            if not safe:
+                return
+
+            existing = cur.execute(
+                f"SELECT * FROM {TABLE} WHERE id=?",
+                (row_id,)
+            ).fetchone()
+
+            if existing is None:
+                return
+
+            if "paid_date" in cols:
+                old_status = existing["job_status"] if "job_status" in cols else existing["status"]
+                new_status = safe.get("job_status", safe.get("status", old_status))
+                existing_paid_date = existing["paid_date"] if "paid_date" in cols else None
+
+                safe["paid_date"] = apply_paid_date_logic(
+                    old_status=old_status,
+                    new_status=new_status,
+                    existing_paid_date=existing_paid_date,
+                )
+
+            if "updated_at" in cols:
+                safe["updated_at"] = datetime.utcnow().isoformat()
+
+            sql = ", ".join([f"{k}=?" for k in safe.keys()])
+            params = list(safe.values()) + [row_id]
+
+            cur.execute(f"UPDATE {TABLE} SET {sql} WHERE id=?", params)
+
+            conn.commit()
+        finally:
             conn.close()
-            return
-
-        existing = cur.execute(
-            f"SELECT * FROM {TABLE} WHERE id=?",
-            (row_id,)
-        ).fetchone()
-
-        if existing is None:
-            conn.close()
-            return
-
-        if "paid_date" in cols:
-            old_status = existing["job_status"] if "job_status" in cols else existing["status"]
-            new_status = safe.get("job_status", safe.get("status", old_status))
-            existing_paid_date = existing["paid_date"] if "paid_date" in cols else None
-
-            safe["paid_date"] = apply_paid_date_logic(
-                old_status=old_status,
-                new_status=new_status,
-                existing_paid_date=existing_paid_date,
-            )
-
-        if "updated_at" in cols:
-            safe["updated_at"] = datetime.utcnow().isoformat()
-
-        sql = ", ".join([f"{k}=?" for k in safe.keys()])
-        params = list(safe.values()) + [row_id]
-
-        cur.execute(f"UPDATE {TABLE} SET {sql} WHERE id=?", params)
-
-        conn.commit()
-        conn.close()
 
     # -------------------------
     # Delete row
     # -------------------------
     def delete_row(row_id: int) -> None:
         conn = get_conn()
-        cur = conn.cursor()
-        cur.execute(f"DELETE FROM {TABLE} WHERE id=?", (row_id,))
-        conn.commit()
-        conn.close()
+        try:
+            cur = conn.cursor()
+            cur.execute(f"DELETE FROM {TABLE} WHERE id=?", (row_id,))
+            conn.commit()
+        finally:
+            conn.close()
 
     # -------------------------
     # DB API
