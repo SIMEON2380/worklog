@@ -56,61 +56,61 @@ def parse_wait_range_to_hours(s: str) -> float:
         return 0.0
 
 
-with st.form("add_job_form"):
-    col1, col2, col3 = st.columns(3)
+col1, col2, col3 = st.columns(3)
 
-    work_date = col1.date_input("Date", value=date.today())
-    job_number = col2.text_input("Job Number")
-    job_type = col3.selectbox("Job Type", cfg.JOB_TYPE_OPTIONS)
+work_date = col1.date_input("Date", value=date.today())
+job_number = col2.text_input("Job Number")
+job_type = col3.selectbox("Job Type", cfg.JOB_TYPE_OPTIONS)
 
-    col4, col5, col6 = st.columns(3)
-    vehicle_description = col4.text_input("Vehicle Description")
-    vehicle_reg = col5.text_input("Vehicle Reg")
-    job_outcome = col6.selectbox(
-        "Job Outcome",
-        ["Completed", "Aborted", "Withdraw", "Fail"],
-        index=0,
-    )
+col4, col5, col6 = st.columns(3)
+vehicle_description = col4.text_input("Vehicle Description")
+vehicle_reg = col5.text_input("Vehicle Reg")
+job_outcome = col6.selectbox(
+    "Job Outcome",
+    ["Completed", "Aborted", "Withdraw", "Fail"],
+    index=0,
+)
 
-    col7, col8, col9 = st.columns(3)
-    collection_from = col7.text_input("Collection From")
-    delivery_to = col8.text_input("Delivery To")
-    job_status = col9.selectbox("Job Status", cfg.STATUS_OPTIONS)
+col7, col8, col9 = st.columns(3)
+collection_from = col7.text_input("Collection From")
+delivery_to = col8.text_input("Delivery To")
+job_status = col9.selectbox("Job Status", cfg.STATUS_OPTIONS)
 
-    col10, col11, col12 = st.columns(3)
-    job_amount = col10.number_input("Job Amount (£)", min_value=0.0, step=1.0)
-    job_expenses = col11.selectbox("Job Expenses", cfg.JOB_EXPENSE_OPTIONS)
-    expenses_amount = col12.number_input("Expenses Amount (£)", min_value=0.0, step=0.5)
+col10, col11, col12 = st.columns(3)
+job_amount = col10.number_input("Job Amount (£)", min_value=0.0, step=1.0)
+job_expenses = col11.selectbox("Job Expenses", cfg.JOB_EXPENSE_OPTIONS)
+expenses_amount = col12.number_input("Expenses Amount (£)", min_value=0.0, step=0.5)
 
-    col13, col14, col15 = st.columns(3)
-    waiting_time = col13.text_input("Waiting Time (e.g. 10-11 or 09:00-11:30)")
+col13, col14, col15 = st.columns(3)
+waiting_time = col13.text_input("Waiting Time (e.g. 10-11 or 09:00-11:30)")
 
-    calc_waiting_hours = float(parse_wait_range_to_hours(waiting_time))
-    calc_waiting_amount = float(calc_waiting_hours) * float(getattr(cfg, "WAITING_RATE", 0.0))
+calc_waiting_hours = float(parse_wait_range_to_hours(waiting_time))
+calc_waiting_amount = float(calc_waiting_hours) * float(getattr(cfg, "WAITING_RATE", 0.0))
 
-    col14.number_input(
-        "Waiting Hours (auto)",
-        min_value=0.0,
-        step=0.5,
-        value=float(calc_waiting_hours),
-        disabled=True,
-    )
-    col15.number_input(
-        "Waiting Amount (£) (auto)",
-        min_value=0.0,
-        step=0.5,
-        value=float(calc_waiting_amount),
-        disabled=True,
-    )
+col14.number_input(
+    "Waiting Hours (auto)",
+    min_value=0.0,
+    step=0.5,
+    value=float(calc_waiting_hours),
+    disabled=True,
+)
 
-    col16, col17, col18 = st.columns(3)
-    add_pay = col16.number_input("Add Pay (£)", min_value=0.0, step=1.0, value=0.0)
-    auth_code = col17.text_input("Auth Code")
-    comments = col18.text_input("Comments")
+col15.number_input(
+    "Waiting Amount (£) (auto)",
+    min_value=0.0,
+    step=0.5,
+    value=float(calc_waiting_amount),
+    disabled=True,
+)
 
-    submitted = st.form_submit_button("Save Job", type="primary")
+col16, col17, col18 = st.columns(3)
+add_pay = col16.number_input("Add Pay (£)", min_value=0.0, step=1.0, value=0.0)
+auth_code = col17.text_input("Auth Code")
+comments = col18.text_input("Comments")
 
-if submitted:
+save_clicked = st.button("Save Job", type="primary")
+
+if save_clicked:
     clean_job_number = job_number.strip() if job_number else ""
     clean_work_date = work_date.isoformat() if work_date else None
     clean_vehicle_description = vehicle_description.strip() if vehicle_description else None
@@ -121,10 +121,19 @@ if submitted:
     clean_waiting_time = waiting_time.strip() if waiting_time else None
     clean_comments = comments.strip() if comments else None
 
+    missing_fields = []
+
+    if not clean_work_date:
+        missing_fields.append("Date")
     if not clean_job_number:
-        st.error("Job Number is required.")
-    elif not clean_work_date:
-        st.error("Date is required.")
+        missing_fields.append("Job Number")
+    if not clean_vehicle_description:
+        missing_fields.append("Vehicle Description")
+    if float(job_amount) <= 0:
+        missing_fields.append("Job Amount")
+
+    if missing_fields:
+        st.error("Please complete these required fields: " + ", ".join(missing_fields))
     else:
         row = {
             "work_date": clean_work_date,
@@ -134,7 +143,7 @@ if submitted:
             "vehicle_reg": clean_vehicle_reg,
             "collection_from": clean_collection_from,
             "delivery_to": clean_delivery_to,
-            "amount": float(job_amount) if job_amount is not None else 0.0,
+            "amount": float(job_amount),
             "job_expenses": job_expenses,
             "expenses_amount": float(expenses_amount) if expenses_amount is not None else 0.0,
             "auth_code": clean_auth_code,
