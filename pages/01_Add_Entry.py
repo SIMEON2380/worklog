@@ -20,17 +20,7 @@ require_login()
 st.subheader("Add New Job")
 
 
-# -------------------------
-# Helpers
-# -------------------------
 def parse_wait_range_to_hours(s: str) -> float:
-    """
-    Accepts:
-      "10-11" -> 1.0
-      "10:30-12:00" -> 1.5
-      "10 - 11" -> 1.0
-    Returns 0.0 if invalid.
-    """
     if not s:
         return 0.0
 
