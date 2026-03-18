@@ -1,11 +1,9 @@
-version: "3.9"
-
 services:
 
   worklog1:
     build: .
     container_name: worklog1
-    command: streamlit run app.py --server.address=0.0.0.0 --server.port=8501
+    command: streamlit run app.py --server.address=0.0.0.0 --server.port=8501 --server.baseUrlPath=docker
     environment:
       - WORKLOG_DB_DIR=/data
     volumes:
