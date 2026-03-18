@@ -1,9 +1,11 @@
-import streamlit as st
+import sqlite3
 from datetime import date
 
+import streamlit as st
+
+from worklog.auth import ensure_default_user
 from worklog.config import Config
 from worklog.db import make_db
-from worklog.auth import ensure_default_user
 from worklog.ui import require_login
 
 cfg = Config()
@@ -83,18 +85,17 @@ with st.form("add_job_form"):
     col13, col14, col15 = st.columns(3)
     waiting_time = col13.text_input("Waiting Time (e.g. 10-11 or 09:00-11:30)")
 
-    # Auto-calc waiting from waiting_time (keeps reports consistent)
     calc_waiting_hours = float(parse_wait_range_to_hours(waiting_time))
     calc_waiting_amount = float(calc_waiting_hours) * float(getattr(cfg, "WAITING_RATE", 0.0))
 
-    waiting_hours = col14.number_input(
+    col14.number_input(
         "Waiting Hours (auto)",
         min_value=0.0,
         step=0.5,
         value=float(calc_waiting_hours),
         disabled=True,
     )
-    waiting_amount = col15.number_input(
+    col15.number_input(
         "Waiting Amount (£) (auto)",
         min_value=0.0,
         step=0.5,
@@ -109,30 +110,52 @@ with st.form("add_job_form"):
 
     submitted = st.form_submit_button("Save Job", type="primary")
 
-    if submitted:
-        DB["insert_row"](
-            {
-                "work_date": work_date.isoformat() if work_date else None,
-                "job_id": job_number.strip() if job_number else None,
-                "category": job_type,
-                "vehicle_description": vehicle_description.strip() if vehicle_description else None,
-                "vehicle_reg": vehicle_reg.strip() if vehicle_reg else None,
-                "collection_from": collection_from.strip() if collection_from else None,
-                "delivery_to": delivery_to.strip() if delivery_to else None,
-                "amount": float(job_amount) if job_amount is not None else 0.0,
-                "job_expenses": job_expenses,
-                "expenses_amount": float(expenses_amount) if expenses_amount is not None else 0.0,
-                "auth_code": auth_code.strip() if auth_code else None,
-                "job_outcome": job_outcome,
-                "job_status": job_status,
-                "status": job_status,
-                "waiting_time": waiting_time.strip() if waiting_time else None,
-                "waiting_hours": float(calc_waiting_hours),
-                "waiting_amount": float(calc_waiting_amount),
-                "add_pay": float(add_pay),
-                "comments": comments.strip() if comments else None,
-            }
-        )
+if submitted:
+    clean_job_number = job_number.strip() if job_number else ""
+    clean_work_date = work_date.isoformat() if work_date else None
+    clean_vehicle_description = vehicle_description.strip() if vehicle_description else None
+    clean_vehicle_reg = vehicle_reg.strip().upper() if vehicle_reg else None
+    clean_collection_from = collection_from.strip() if collection_from else None
+    clean_delivery_to = delivery_to.strip() if delivery_to else None
+    clean_auth_code = auth_code.strip() if auth_code else None
+    clean_waiting_time = waiting_time.strip() if waiting_time else None
+    clean_comments = comments.strip() if comments else None
 
-        st.success("Job saved successfully.")
-        st.rerun()
+    if not clean_job_number:
+        st.error("Job Number is required.")
+    elif not clean_work_date:
+        st.error("Date is required.")
+    else:
+        row = {
+            "work_date": clean_work_date,
+            "job_id": clean_job_number,
+            "category": job_type,
+            "vehicle_description": clean_vehicle_description,
+            "vehicle_reg": clean_vehicle_reg,
+            "collection_from": clean_collection_from,
+            "delivery_to": clean_delivery_to,
+            "amount": float(job_amount) if job_amount is not None else 0.0,
+            "job_expenses": job_expenses,
+            "expenses_amount": float(expenses_amount) if expenses_amount is not None else 0.0,
+            "auth_code": clean_auth_code,
+            "job_outcome": job_outcome,
+            "job_status": job_status,
+            "status": job_status,
+            "waiting_time": clean_waiting_time,
+            "waiting_hours": float(calc_waiting_hours),
+            "waiting_amount": float(calc_waiting_amount),
+            "add_pay": float(add_pay),
+            "comments": clean_comments,
+        }
+
+        try:
+            DB["insert_row"](row)
+            st.success(f"Job {clean_job_number} saved successfully.")
+            st.stop()
+
+        except sqlite3.IntegrityError:
+            st.error(
+                f"Job {clean_job_number} for {clean_work_date} already exists in the database."
+            )
+        except Exception as e:
+            st.error(f"Save failed: {e}")

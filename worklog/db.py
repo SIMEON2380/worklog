@@ -46,6 +46,20 @@ def make_db(cfg):
 
         return existing_paid_date
 
+    def row_exists_by_job_date(cur: sqlite3.Cursor, work_date: Any, job_id: Any) -> Optional[sqlite3.Row]:
+        if not work_date or not job_id:
+            return None
+
+        return cur.execute(
+            f"""
+            SELECT *
+            FROM {TABLE}
+            WHERE work_date = ? AND job_id = ?
+            LIMIT 1
+            """,
+            (work_date, job_id),
+        ).fetchone()
+
     # -------------------------
     # Ensure schema
     # -------------------------
@@ -129,6 +143,19 @@ def make_db(cfg):
             cols = get_columns(cur)
             safe = {k: v for k, v in data.items() if k in cols and k != "id"}
 
+            if not safe:
+                return None
+
+            work_date = safe.get("work_date")
+            job_id = str(safe.get("job_id") or "").strip()
+
+            if not work_date:
+                raise ValueError("work_date is required")
+            if not job_id:
+                raise ValueError("job_id is required")
+
+            safe["job_id"] = job_id
+
             now = datetime.utcnow().isoformat()
 
             if "created_at" in cols and "created_at" not in safe:
@@ -148,8 +175,11 @@ def make_db(cfg):
                     if "paid_date" not in safe:
                         safe["paid_date"] = None
 
-            if not safe:
-                return None
+            existing = row_exists_by_job_date(cur, work_date, job_id)
+            if existing is not None:
+                raise sqlite3.IntegrityError(
+                    f"Duplicate job entry for work_date={work_date}, job_id={job_id}"
+                )
 
             keys = list(safe.keys())
             placeholders = ", ".join(["?"] * len(keys))
@@ -158,7 +188,6 @@ def make_db(cfg):
 
             cur.execute(sql, params)
             new_id = cur.lastrowid
-
             conn.commit()
             return new_id
         finally:
@@ -183,11 +212,30 @@ def make_db(cfg):
 
             existing = cur.execute(
                 f"SELECT * FROM {TABLE} WHERE id=?",
-                (row_id,)
+                (row_id,),
             ).fetchone()
 
             if existing is None:
                 return
+
+            new_work_date = safe.get("work_date", existing["work_date"])
+            new_job_id = str(safe.get("job_id", existing["job_id"]) or "").strip()
+            safe["job_id"] = new_job_id
+
+            duplicate = cur.execute(
+                f"""
+                SELECT id
+                FROM {TABLE}
+                WHERE work_date = ? AND job_id = ? AND id <> ?
+                LIMIT 1
+                """,
+                (new_work_date, new_job_id, row_id),
+            ).fetchone()
+
+            if duplicate is not None:
+                raise sqlite3.IntegrityError(
+                    f"Another row already exists for work_date={new_work_date}, job_id={new_job_id}"
+                )
 
             if "paid_date" in cols:
                 old_status = existing["job_status"] if "job_status" in cols else existing["status"]
@@ -207,7 +255,6 @@ def make_db(cfg):
             params = list(safe.values()) + [row_id]
 
             cur.execute(f"UPDATE {TABLE} SET {sql} WHERE id=?", params)
-
             conn.commit()
         finally:
             conn.close()
