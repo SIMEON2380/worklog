@@ -10,6 +10,11 @@ class Config:
     DB_DIR: str = os.environ.get("WORKLOG_DB_DIR", "/var/lib/worklog")
     TABLE_NAME: str = "work_logs"
 
+    # 🔥 NEW: Targets
+    DAILY_TARGET: float = 200.0
+    WEEKLY_TARGET: float = 1000.0
+
+    # Existing
     WAITING_RATE: float = 7.50
 
     STATUS_OPTIONS = ["Start", "Completed", "Aborted", "Paid", "Pending", "Withdraw"]
