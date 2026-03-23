@@ -44,7 +44,6 @@ for col in ["amount", "expenses_amount", "waiting_amount", "add_pay"]:
     else:
         today_df[col] = 0.0
 
-# Count only real completed cars for today
 if "job_outcome" in today_df.columns:
     today_cars_df = today_df[
         today_df["job_outcome"].fillna("").str.strip().str.lower() == "completed"
@@ -54,7 +53,18 @@ else:
 
 today_cars_df = today_cars_df[today_cars_df["amount"] > 0].copy()
 
-cars_driven = len(today_cars_df)
+if "job_id" in today_cars_df.columns:
+    cars_driven = (
+        today_cars_df["job_id"]
+        .astype(str)
+        .str.strip()
+        .replace("", pd.NA)
+        .dropna()
+        .nunique()
+    )
+else:
+    cars_driven = len(today_cars_df)
+
 total_amount = float(today_df["amount"].sum())
 total_expenses = float(today_df["expenses_amount"].sum())
 total_waiting_pay = float(today_df["waiting_amount"].sum())
@@ -110,7 +120,6 @@ for col in ["amount", "expenses_amount", "waiting_amount", "add_pay"]:
     else:
         week_df[col] = 0.0
 
-# Count only real driven cars this week
 if "job_outcome" in week_df.columns:
     weekly_cars_df = week_df[
         week_df["job_outcome"].fillna("").str.strip().str.lower() == "completed"
@@ -120,7 +129,18 @@ else:
 
 weekly_cars_df = weekly_cars_df[weekly_cars_df["amount"] > 0].copy()
 
-weekly_cars = len(weekly_cars_df)
+if "job_id" in weekly_cars_df.columns:
+    weekly_cars = (
+        weekly_cars_df["job_id"]
+        .astype(str)
+        .str.strip()
+        .replace("", pd.NA)
+        .dropna()
+        .nunique()
+    )
+else:
+    weekly_cars = len(weekly_cars_df)
+
 weekly_amount = float(week_df["amount"].sum())
 weekly_waiting = float(week_df["waiting_amount"].sum())
 weekly_add_pay = float(week_df["add_pay"].sum())
@@ -134,7 +154,4 @@ col7, col8, col9, col10 = st.columns(4)
 col7.metric("Cars Driven This Week", weekly_cars)
 col8.metric("Weekly Net", f"£{weekly_net:.2f}")
 col9.metric("Weekly Expenses", f"£{weekly_expenses:.2f}")
-col10.metric(
-    "Gap to Weekly Target",
-    f"£{weekly_gap:.2f}" if weekly_gap > 0 else "£0.00"
-)
+col10.metric("Gap to Weekly Target", f"£{weekly_gap:.2f}" if weekly_gap > 0 else "£0.00")
