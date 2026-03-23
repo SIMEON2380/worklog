@@ -44,6 +44,7 @@ for col in ["amount", "expenses_amount", "waiting_amount", "add_pay"]:
     else:
         today_df[col] = 0.0
 
+# Count only real completed driving jobs for today
 if "job_outcome" in today_df.columns:
     today_cars_df = today_df[
         today_df["job_outcome"].fillna("").str.strip().str.lower() == "completed"
@@ -52,6 +53,11 @@ else:
     today_cars_df = today_df.copy()
 
 today_cars_df = today_cars_df[today_cars_df["amount"] > 0].copy()
+
+if "category" in today_cars_df.columns:
+    today_cars_df = today_cars_df[
+        today_cars_df["category"].fillna("").str.strip().str.lower() == "strd trade plate"
+    ].copy()
 
 if "job_id" in today_cars_df.columns:
     cars_driven = (
@@ -120,6 +126,7 @@ for col in ["amount", "expenses_amount", "waiting_amount", "add_pay"]:
     else:
         week_df[col] = 0.0
 
+# Count only real completed driving jobs this week
 if "job_outcome" in week_df.columns:
     weekly_cars_df = week_df[
         week_df["job_outcome"].fillna("").str.strip().str.lower() == "completed"
@@ -128,6 +135,11 @@ else:
     weekly_cars_df = week_df.copy()
 
 weekly_cars_df = weekly_cars_df[weekly_cars_df["amount"] > 0].copy()
+
+if "category" in weekly_cars_df.columns:
+    weekly_cars_df = weekly_cars_df[
+        weekly_cars_df["category"].fillna("").str.strip().str.lower() == "strd trade plate"
+    ].copy()
 
 if "job_id" in weekly_cars_df.columns:
     weekly_cars = (
