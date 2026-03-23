@@ -118,7 +118,12 @@ else:
 st.subheader("This Week Overview")
 
 start_of_week = today - timedelta(days=today.weekday())
-week_df = df[df["work_date"] >= start_of_week].copy()
+end_of_week = start_of_week + timedelta(days=6)
+
+week_df = df[
+    (df["work_date"] >= start_of_week) &
+    (df["work_date"] <= end_of_week)
+].copy()
 
 for col in ["amount", "expenses_amount", "waiting_amount", "add_pay"]:
     if col in week_df.columns:
@@ -161,19 +166,6 @@ weekly_net = weekly_amount + weekly_waiting + weekly_add_pay - weekly_expenses
 
 weekly_target = cfg.WEEKLY_TARGET
 weekly_gap = weekly_target - weekly_net
-
-debug_cols = [col for col in [
-    "work_date",
-    "job_id",
-    "category",
-    "amount",
-    "job_outcome",
-    "job_status",
-    "description"
-] if col in weekly_cars_df.columns]
-
-st.subheader("Weekly Cars Debug")
-st.dataframe(weekly_cars_df[debug_cols].sort_values(by="work_date", ascending=False))
 
 col7, col8, col9, col10 = st.columns(4)
 col7.metric("Cars Driven This Week", weekly_cars)
