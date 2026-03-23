@@ -18,7 +18,7 @@ DB["ensure_schema"]()
 ensure_default_user(cfg)
 require_login()
 
-st.title("🎯 Target Intelligence")
+st.title("🎯 Target Intelligence (AUTO DEPLOY TEST)")
 
 TARGET = cfg.DAILY_TARGET
 today = date.today()
