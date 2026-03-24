@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime, timedelta
 from typing import Any, Dict, Optional, Tuple
 
 import pandas as pd
@@ -16,6 +16,58 @@ def require_login() -> None:
     if not st.session_state.get("auth_user"):
         st.warning("Please log in from the Dashboard page.")
         st.stop()
+
+
+# -------------------------
+# Vehicle compliance check
+# -------------------------
+def check_vehicle_compliance(reg: str) -> Dict[str, Any]:
+    """
+    Mock vehicle compliance check.
+    Later this can be replaced with a real DVLA/DVSA API call.
+
+    Test examples:
+      reg ending in 1 -> Non-compliant
+      reg ending in 2 -> Warning
+      anything else   -> Compliant
+    """
+    if not reg or not str(reg).strip():
+        return {
+            "reg": "",
+            "tax_status": "Unknown",
+            "mot_expiry": None,
+            "status": "Missing registration",
+            "reason": "No registration entered",
+        }
+
+    reg_clean = str(reg).replace(" ", "").upper()
+    today = datetime.today().date()
+
+    if reg_clean.endswith("1"):
+        return {
+            "reg": reg_clean,
+            "tax_status": "Untaxed",
+            "mot_expiry": today - timedelta(days=10),
+            "status": "Non-compliant",
+            "reason": "Road tax expired and MOT expired",
+        }
+
+    if reg_clean.endswith("2"):
+        return {
+            "reg": reg_clean,
+            "tax_status": "Taxed",
+            "mot_expiry": today + timedelta(days=10),
+            "status": "Warning",
+            "reason": "MOT due soon",
+        }
+
+    return {
+        "reg": reg_clean,
+        "tax_status": "Taxed",
+        "mot_expiry": today + timedelta(days=120),
+        "status": "Compliant",
+        "reason": "",
+    }
 
 
 # -------------------------

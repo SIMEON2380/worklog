@@ -6,7 +6,7 @@ import streamlit as st
 from worklog.auth import ensure_default_user
 from worklog.config import Config
 from worklog.db import make_db
-from worklog.ui import require_login
+from worklog.ui import require_login, check_vehicle_compliance
 
 cfg = Config()
 DB = make_db(cfg)
@@ -60,6 +60,30 @@ job_outcome = col6.selectbox(
     ["Completed", "Aborted", "Withdraw", "Fail"],
     index=0,
 )
+
+# vehicle compliance check
+vehicle_check = check_vehicle_compliance(vehicle_reg)
+
+if vehicle_reg and str(vehicle_reg).strip():
+    mot_expiry = vehicle_check.get("mot_expiry")
+    mot_expiry_text = mot_expiry.isoformat() if mot_expiry else "Unknown"
+
+    col5.caption(
+        f"Road Tax: {vehicle_check.get('tax_status', 'Unknown')} | "
+        f"MOT Expiry: {mot_expiry_text}"
+    )
+
+    status = vehicle_check.get("status", "Unknown")
+    reason = vehicle_check.get("reason", "")
+
+    if status == "Compliant":
+        col5.success("Compliant")
+    elif status == "Warning":
+        col5.warning(f"Warning - {reason}")
+    elif status == "Non-compliant":
+        col5.error(f"Non-compliant - {reason}")
+    else:
+        col5.info(f"{status}" + (f" - {reason}" if reason else ""))
 
 col7, col8, col9 = st.columns(3)
 collection_from = col7.text_input("Collection From")
