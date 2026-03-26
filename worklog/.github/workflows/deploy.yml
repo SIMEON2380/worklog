@@ -10,31 +10,7 @@ jobs:
     runs-on: self-hosted
 
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Run deployment pipeline
+      - name: Run full deployment pipeline
         run: |
-          echo "🚀 Starting pipeline..."
-
-          cd /home/simeon/worklog-test
-          git fetch origin main
-          git reset --hard origin/main
-
-          echo "🔄 Restarting TEST service..."
-          sudo systemctl restart worklog-test
-          sudo systemctl is-active worklog-test
-
-          echo "🧪 Running Playwright tests..."
-          python3 -m pytest tests/test_app.py -v --maxfail=1
-
-          echo "📥 Updating PROD..."
-          cd /home/simeon/worklog
-          git fetch origin main
-          git reset --hard origin/main
-
-          echo "🔄 Restarting PROD service..."
-          sudo systemctl restart worklog
-          sudo systemctl is-active worklog
-
-          echo "🎉 Deployment complete"
+          echo "🚀 Running full deployment pipeline..."
+          /home/simeon/deploy_worklog.sh
