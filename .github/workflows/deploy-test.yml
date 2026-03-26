@@ -1,14 +1,25 @@
-name: Deploy Worklog Test
+name: Worklog CI/CD Pipeline
 
 on:
   push:
     branches: ["main"]
 
 jobs:
-  deploy-test:
+  test:
     runs-on: self-hosted
+
     steps:
-      - name: Run full deployment pipeline
-        shell: bash
+      - name: Run TEST pipeline
         run: |
           /home/simeon/deploy_worklog.sh
+
+  deploy-prod:
+    needs: test
+    runs-on: self-hosted
+    environment:
+      name: production
+
+    steps:
+      - name: Deploy to PROD
+        run: |
+          /home/simeon/deploy_worklog_prod.sh
