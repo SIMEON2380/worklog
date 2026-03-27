@@ -34,3 +34,29 @@ def get_jobs():
 
     except Exception as e:
         return {"error": str(e)}
+
+
+@app.get("/jobs/{job_id}")
+def get_job(job_id: str):
+    try:
+        conn = get_connection()
+        cur = conn.cursor()
+
+        cur.execute("""
+            SELECT id, work_date, job_id, amount, job_status
+            FROM work_logs
+            WHERE job_id = ?
+            ORDER BY id DESC
+            LIMIT 1
+        """, (job_id,))
+
+        row = cur.fetchone()
+        conn.close()
+
+        if row is None:
+            return {"error": "job not found"}
+
+        return dict(row)
+
+    except Exception as e:
+        return {"error": str(e)}
