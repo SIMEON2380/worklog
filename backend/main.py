@@ -1,7 +1,13 @@
 from fastapi import FastAPI, HTTPException, status
 
-from backend.db import get_connection
 from backend.schemas import JobCreate, JobUpdate
+from backend.services import (
+    create_job_record,
+    delete_job_record,
+    get_job_by_id,
+    list_jobs,
+    update_job_record,
+)
 
 app = FastAPI()
 
@@ -19,21 +25,9 @@ def health():
 @app.get("/jobs")
 def get_jobs():
     try:
-        conn = get_connection()
-        cur = conn.cursor()
-
-        cur.execute("""
-            SELECT id, work_date, job_id, amount, job_status
-            FROM work_logs
-            ORDER BY id DESC
-            LIMIT 20
-        """)
-
-        rows = cur.fetchall()
-        conn.close()
-
-        return [dict(row) for row in rows]
-
+        return list_jobs()
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -44,28 +38,7 @@ def get_jobs():
 @app.get("/jobs/{job_id}")
 def get_job(job_id: str):
     try:
-        conn = get_connection()
-        cur = conn.cursor()
-
-        cur.execute("""
-            SELECT id, work_date, job_id, amount, job_status
-            FROM work_logs
-            WHERE job_id = ?
-            ORDER BY id DESC
-            LIMIT 1
-        """, (job_id,))
-
-        row = cur.fetchone()
-        conn.close()
-
-        if row is None:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="job not found"
-            )
-
-        return dict(row)
-
+        return get_job_by_id(job_id)
     except HTTPException:
         raise
     except Exception as e:
@@ -78,39 +51,7 @@ def get_job(job_id: str):
 @app.post("/jobs", status_code=status.HTTP_201_CREATED)
 def create_job(job: JobCreate):
     try:
-        conn = get_connection()
-        cur = conn.cursor()
-
-        cur.execute("""
-            SELECT 1
-            FROM work_logs
-            WHERE job_id = ?
-            LIMIT 1
-        """, (job.job_id,))
-
-        existing = cur.fetchone()
-        if existing:
-            conn.close()
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail="job_id already exists"
-            )
-
-        cur.execute("""
-            INSERT INTO work_logs (work_date, job_id, amount, job_status)
-            VALUES (?, ?, ?, ?)
-        """, (str(job.work_date), job.job_id, job.amount, job.job_status))
-
-        conn.commit()
-        new_id = cur.lastrowid
-        conn.close()
-
-        return {
-            "status": "success",
-            "id": new_id,
-            "job_id": job.job_id
-        }
-
+        return create_job_record(job)
     except HTTPException:
         raise
     except Exception as e:
@@ -123,38 +64,7 @@ def create_job(job: JobCreate):
 @app.put("/jobs/{job_id}")
 def update_job(job_id: str, job: JobUpdate):
     try:
-        conn = get_connection()
-        cur = conn.cursor()
-
-        cur.execute("""
-            SELECT 1
-            FROM work_logs
-            WHERE job_id = ?
-            LIMIT 1
-        """, (job_id,))
-
-        existing = cur.fetchone()
-        if not existing:
-            conn.close()
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="job not found"
-            )
-
-        cur.execute("""
-            UPDATE work_logs
-            SET work_date = ?, amount = ?, job_status = ?
-            WHERE job_id = ?
-        """, (str(job.work_date), job.amount, job.job_status, job_id))
-
-        conn.commit()
-        conn.close()
-
-        return {
-            "status": "success",
-            "job_id": job_id
-        }
-
+        return update_job_record(job_id, job)
     except HTTPException:
         raise
     except Exception as e:
@@ -167,37 +77,7 @@ def update_job(job_id: str, job: JobUpdate):
 @app.delete("/jobs/{job_id}")
 def delete_job(job_id: str):
     try:
-        conn = get_connection()
-        cur = conn.cursor()
-
-        cur.execute("""
-            SELECT 1
-            FROM work_logs
-            WHERE job_id = ?
-            LIMIT 1
-        """, (job_id,))
-
-        existing = cur.fetchone()
-        if not existing:
-            conn.close()
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="job not found"
-            )
-
-        cur.execute("""
-            DELETE FROM work_logs
-            WHERE job_id = ?
-        """, (job_id,))
-
-        conn.commit()
-        conn.close()
-
-        return {
-            "status": "success",
-            "job_id": job_id
-        }
-
+        return delete_job_record(job_id)
     except HTTPException:
         raise
     except Exception as e:
