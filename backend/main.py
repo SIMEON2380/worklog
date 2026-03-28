@@ -1,7 +1,7 @@
 from datetime import date
 from typing import Literal
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException, status
 from pydantic import BaseModel, Field
 
 from backend.db import get_connection
@@ -51,7 +51,10 @@ def get_jobs():
         return [dict(row) for row in rows]
 
     except Exception as e:
-        return {"error": str(e)}
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=str(e)
+        )
 
 
 @app.get("/jobs/{job_id}")
@@ -72,15 +75,23 @@ def get_job(job_id: str):
         conn.close()
 
         if row is None:
-            return {"error": "job not found"}
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="job not found"
+            )
 
         return dict(row)
 
+    except HTTPException:
+        raise
     except Exception as e:
-        return {"error": str(e)}
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=str(e)
+        )
 
 
-@app.post("/jobs")
+@app.post("/jobs", status_code=status.HTTP_201_CREATED)
 def create_job(job: JobCreate):
     try:
         conn = get_connection()
@@ -96,7 +107,10 @@ def create_job(job: JobCreate):
         existing = cur.fetchone()
         if existing:
             conn.close()
-            return {"error": "job_id already exists"}
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="job_id already exists"
+            )
 
         cur.execute("""
             INSERT INTO work_logs (work_date, job_id, amount, job_status)
@@ -113,8 +127,13 @@ def create_job(job: JobCreate):
             "job_id": job.job_id
         }
 
+    except HTTPException:
+        raise
     except Exception as e:
-        return {"error": str(e)}
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=str(e)
+        )
 
 
 @app.put("/jobs/{job_id}")
@@ -133,7 +152,10 @@ def update_job(job_id: str, job: JobUpdate):
         existing = cur.fetchone()
         if not existing:
             conn.close()
-            return {"error": "job not found"}
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="job not found"
+            )
 
         cur.execute("""
             UPDATE work_logs
@@ -149,8 +171,13 @@ def update_job(job_id: str, job: JobUpdate):
             "job_id": job_id
         }
 
+    except HTTPException:
+        raise
     except Exception as e:
-        return {"error": str(e)}
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=str(e)
+        )
 
 
 @app.delete("/jobs/{job_id}")
@@ -169,7 +196,10 @@ def delete_job(job_id: str):
         existing = cur.fetchone()
         if not existing:
             conn.close()
-            return {"error": "job not found"}
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="job not found"
+            )
 
         cur.execute("""
             DELETE FROM work_logs
@@ -184,5 +214,10 @@ def delete_job(job_id: str):
             "job_id": job_id
         }
 
+    except HTTPException:
+        raise
     except Exception as e:
-        return {"error": str(e)}
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=str(e)
+        )
