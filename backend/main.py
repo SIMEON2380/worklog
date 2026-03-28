@@ -1,15 +1,18 @@
+from datetime import date
+from typing import Literal
+
 from fastapi import FastAPI
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from backend.db import get_connection
 
 app = FastAPI()
 
 
 class JobCreate(BaseModel):
-    work_date: str
-    job_id: str
-    amount: float
-    job_status: str
+    work_date: date
+    job_id: str = Field(..., min_length=1, max_length=50)
+    amount: float = Field(..., ge=0)
+    job_status: Literal["Start", "Pending", "Paid", "Completed", "Aborted", "Withdraw"]
 
 
 @app.get("/")
@@ -77,9 +80,21 @@ def create_job(job: JobCreate):
         cur = conn.cursor()
 
         cur.execute("""
+            SELECT 1
+            FROM work_logs
+            WHERE job_id = ?
+            LIMIT 1
+        """, (job.job_id,))
+
+        existing = cur.fetchone()
+        if existing:
+            conn.close()
+            return {"error": "job_id already exists"}
+
+        cur.execute("""
             INSERT INTO work_logs (work_date, job_id, amount, job_status)
             VALUES (?, ?, ?, ?)
-        """, (job.work_date, job.job_id, job.amount, job.job_status))
+        """, (str(job.work_date), job.job_id, job.amount, job.job_status))
 
         conn.commit()
         new_id = cur.lastrowid
