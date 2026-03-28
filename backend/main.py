@@ -15,6 +15,12 @@ class JobCreate(BaseModel):
     job_status: Literal["Start", "Pending", "Paid", "Completed", "Aborted", "Withdraw"]
 
 
+class JobUpdate(BaseModel):
+    work_date: date
+    amount: float = Field(..., ge=0)
+    job_status: Literal["Start", "Pending", "Paid", "Completed", "Aborted", "Withdraw"]
+
+
 @app.get("/")
 def root():
     return {"message": "Worklog API is running"}
@@ -104,6 +110,42 @@ def create_job(job: JobCreate):
             "status": "success",
             "id": new_id,
             "job_id": job.job_id
+        }
+
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@app.put("/jobs/{job_id}")
+def update_job(job_id: str, job: JobUpdate):
+    try:
+        conn = get_connection()
+        cur = conn.cursor()
+
+        cur.execute("""
+            SELECT 1
+            FROM work_logs
+            WHERE job_id = ?
+            LIMIT 1
+        """, (job_id,))
+
+        existing = cur.fetchone()
+        if not existing:
+            conn.close()
+            return {"error": "job not found"}
+
+        cur.execute("""
+            UPDATE work_logs
+            SET work_date = ?, amount = ?, job_status = ?
+            WHERE job_id = ?
+        """, (str(job.work_date), job.amount, job.job_status, job_id))
+
+        conn.commit()
+        conn.close()
+
+        return {
+            "status": "success",
+            "job_id": job_id
         }
 
     except Exception as e:
