@@ -1,7 +1,15 @@
 from fastapi import FastAPI
+from pydantic import BaseModel
 from backend.db import get_connection
 
 app = FastAPI()
+
+
+class JobCreate(BaseModel):
+    work_date: str
+    job_id: str
+    amount: float
+    job_status: str
 
 
 @app.get("/")
@@ -57,6 +65,31 @@ def get_job(job_id: str):
             return {"error": "job not found"}
 
         return dict(row)
+
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@app.post("/jobs")
+def create_job(job: JobCreate):
+    try:
+        conn = get_connection()
+        cur = conn.cursor()
+
+        cur.execute("""
+            INSERT INTO work_logs (work_date, job_id, amount, job_status)
+            VALUES (?, ?, ?, ?)
+        """, (job.work_date, job.job_id, job.amount, job.job_status))
+
+        conn.commit()
+        new_id = cur.lastrowid
+        conn.close()
+
+        return {
+            "status": "success",
+            "id": new_id,
+            "job_id": job.job_id
+        }
 
     except Exception as e:
         return {"error": str(e)}
