@@ -44,3 +44,16 @@ st.caption("All jobs in the database")
 
 df = DB["read_all"]()
 display_jobs_table(cfg, df, caption=None)
+
+st.subheader("API TEST")
+
+import requests
+
+API_URL = "http://127.0.0.1:8000"
+
+try:
+    res = requests.get(f"{API_URL}/health")
+    st.write("API status code:", res.status_code)
+    st.write("API response:", res.json())
+except Exception as e:
+    st.error(f"API connection failed: {e}")
