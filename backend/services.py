@@ -8,7 +8,27 @@ def list_jobs():
     cur = conn.cursor()
 
     cur.execute("""
-        SELECT id, work_date, job_id, amount, job_status
+        SELECT
+            id,
+            work_date,
+            job_id,
+            amount,
+            category,
+            job_status,
+            waiting_time,
+            waiting_hours,
+            waiting_amount,
+            vehicle_description,
+            vehicle_reg,
+            collection_from,
+            delivery_to,
+            job_expenses,
+            expenses_amount,
+            auth_code,
+            comments,
+            add_pay,
+            paid_date,
+            job_outcome
         FROM work_logs
         ORDER BY id DESC
         LIMIT 20
@@ -25,7 +45,27 @@ def get_job_by_id(job_id: str):
     cur = conn.cursor()
 
     cur.execute("""
-        SELECT id, work_date, job_id, amount, job_status
+        SELECT
+            id,
+            work_date,
+            job_id,
+            amount,
+            category,
+            job_status,
+            waiting_time,
+            waiting_hours,
+            waiting_amount,
+            vehicle_description,
+            vehicle_reg,
+            collection_from,
+            delivery_to,
+            job_expenses,
+            expenses_amount,
+            auth_code,
+            comments,
+            add_pay,
+            paid_date,
+            job_outcome
         FROM work_logs
         WHERE job_id = ?
         ORDER BY id DESC
@@ -64,9 +104,49 @@ def create_job_record(job):
         )
 
     cur.execute("""
-        INSERT INTO work_logs (work_date, job_id, amount, job_status)
-        VALUES (?, ?, ?, ?)
-    """, (str(job.work_date), job.job_id, job.amount, job.job_status))
+        INSERT INTO work_logs (
+            work_date,
+            job_id,
+            amount,
+            category,
+            job_status,
+            waiting_time,
+            waiting_hours,
+            waiting_amount,
+            vehicle_description,
+            vehicle_reg,
+            collection_from,
+            delivery_to,
+            job_expenses,
+            expenses_amount,
+            auth_code,
+            comments,
+            add_pay,
+            paid_date,
+            job_outcome
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """, (
+        str(job.work_date),
+        job.job_id,
+        job.amount,
+        job.category,
+        job.job_status,
+        job.waiting_time,
+        job.waiting_hours,
+        job.waiting_amount,
+        job.vehicle_description,
+        job.vehicle_reg,
+        job.collection_from,
+        job.delivery_to,
+        job.job_expenses,
+        job.expenses_amount if job.expenses_amount is not None else 0.0,
+        job.auth_code,
+        job.comments,
+        job.add_pay if job.add_pay is not None else 0.0,
+        str(job.paid_date) if job.paid_date else None,
+        job.job_outcome,
+    ))
 
     conn.commit()
     new_id = cur.lastrowid
@@ -100,9 +180,47 @@ def update_job_record(job_id: str, job):
 
     cur.execute("""
         UPDATE work_logs
-        SET work_date = ?, amount = ?, job_status = ?
+        SET
+            work_date = ?,
+            amount = ?,
+            category = ?,
+            job_status = ?,
+            waiting_time = ?,
+            waiting_hours = ?,
+            waiting_amount = ?,
+            vehicle_description = ?,
+            vehicle_reg = ?,
+            collection_from = ?,
+            delivery_to = ?,
+            job_expenses = ?,
+            expenses_amount = ?,
+            auth_code = ?,
+            comments = ?,
+            add_pay = ?,
+            paid_date = ?,
+            job_outcome = ?
         WHERE job_id = ?
-    """, (str(job.work_date), job.amount, job.job_status, job_id))
+    """, (
+        str(job.work_date),
+        job.amount,
+        job.category,
+        job.job_status,
+        job.waiting_time,
+        job.waiting_hours,
+        job.waiting_amount,
+        job.vehicle_description,
+        job.vehicle_reg,
+        job.collection_from,
+        job.delivery_to,
+        job.job_expenses,
+        job.expenses_amount if job.expenses_amount is not None else 0.0,
+        job.auth_code,
+        job.comments,
+        job.add_pay if job.add_pay is not None else 0.0,
+        str(job.paid_date) if job.paid_date else None,
+        job.job_outcome,
+        job_id,
+    ))
 
     conn.commit()
     conn.close()
