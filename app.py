@@ -1,5 +1,6 @@
 import streamlit as st
 import pandas as pd
+import requests
 
 from worklog.config import Config
 from worklog.db import make_db
