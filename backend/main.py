@@ -40,7 +40,8 @@ def health():
 
 
 @app.get("/jobs")
-def get_jobs():
+def get_jobs(x_api_key: str | None = Header(default=None)):
+    verify_api_key(x_api_key)
     try:
         return list_jobs()
     except HTTPException:
@@ -53,7 +54,8 @@ def get_jobs():
 
 
 @app.get("/jobs/{job_id}")
-def get_job(job_id: str):
+def get_job(job_id: str, x_api_key: str | None = Header(default=None)):
+    verify_api_key(x_api_key)
     try:
         return get_job_by_id(job_id)
     except HTTPException:
