@@ -185,24 +185,8 @@ if save_clicked:
                 st.success(f"Job {clean_job_number} saved via API ✅")
                 st.stop()
             else:
-                st.warning("API failed, falling back to DB...")
-                DB["insert_row"](row)
-                st.success(f"Job {clean_job_number} saved locally.")
-                st.stop()
+                st.error(f"API failed: {response.status_code}")
+                st.write(response.text)
 
-        except sqlite3.IntegrityError:
-            st.error(
-                f"Job {clean_job_number} for {clean_work_date} already exists in the database."
-            )
         except Exception as e:
-            st.warning("API error, falling back to DB...")
-            try:
-                DB["insert_row"](row)
-                st.success(f"Job {clean_job_number} saved locally.")
-                st.stop()
-            except sqlite3.IntegrityError:
-                st.error(
-                    f"Job {clean_job_number} for {clean_work_date} already exists in the database."
-                )
-            except Exception as db_error:
-                st.error(f"Save failed: {db_error}")
+            st.error(f"Save failed: {e}")
