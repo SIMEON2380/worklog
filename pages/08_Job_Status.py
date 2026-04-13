@@ -1,10 +1,14 @@
 import streamlit as st
 import pandas as pd
+import requests
 
 from worklog.config import Config
 from worklog.db import make_db
 from worklog.auth import ensure_default_user
 from worklog.ui import require_login, editable_jobs_table
+
+API_URL = "http://127.0.0.1:8000"
+API_KEY = "supersecret123"
 
 cfg = Config()
 DB = make_db(cfg)
@@ -17,7 +21,35 @@ require_login()
 
 st.subheader("Job Status Dashboard")
 
-df = DB["read_all"]().copy()
+try:
+    response = requests.get(
+        f"{API_URL}/jobs",
+        headers={"x-api-key": API_KEY},
+        timeout=15,
+    )
+
+    if response.status_code != 200:
+        st.error(f"API failed: {response.status_code}")
+        st.write(response.text)
+        st.stop()
+
+    payload = response.json()
+
+    if isinstance(payload, dict) and "data" in payload:
+        records = payload["data"]
+    elif isinstance(payload, list):
+        records = payload
+    else:
+        st.error("Unexpected API response format.")
+        st.write(payload)
+        st.stop()
+
+    df = pd.DataFrame(records).copy()
+
+except Exception as e:
+    st.error(f"Failed to load jobs from API: {e}")
+    st.stop()
+
 if df.empty:
     st.info("No jobs found.")
     st.stop()
@@ -65,7 +97,7 @@ def compute_pending_money(frame: pd.DataFrame) -> float:
 status_col = get_status_col(df)
 
 if status_col is None:
-    st.error("No status column found in the database.")
+    st.error("No status column found in the data.")
     st.stop()
 
 df[status_col] = safe_text(df[status_col])
