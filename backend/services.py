@@ -79,8 +79,7 @@ def list_jobs():
             paid_date,
             job_outcome
         FROM work_logs
-        ORDER BY id DESC
-        LIMIT 20
+        ORDER BY work_date DESC, id DESC
     """)
 
     rows = cur.fetchall()
