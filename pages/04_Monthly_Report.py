@@ -66,16 +66,15 @@ if "work_date" not in df.columns:
     st.error("Missing 'work_date' column in dataset.")
     st.stop()
 
-# ✅ FIX APPLIED HERE
 df["work_date"] = pd.to_datetime(df["work_date"], errors="coerce")
 df = df.dropna(subset=["work_date"])
-df["work_date"] = df["work_date"].dt.date  # 👈 this is the key fix
 
 if df.empty:
     st.info("No valid work dates found.")
     st.stop()
 
-df["_month"] = pd.to_datetime(df["work_date"]).to_period("M").astype(str)
+df["_month"] = df["work_date"].dt.to_period("M").astype(str)
+df["work_date"] = df["work_date"].dt.date
 
 all_months = sorted(df["_month"].unique().tolist(), reverse=True)
 options = [current_month] + [m for m in all_months if m != current_month]
