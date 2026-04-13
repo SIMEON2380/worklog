@@ -1,5 +1,6 @@
 import sqlite3
 from datetime import date
+import requests
 
 import streamlit as st
 
@@ -61,7 +62,6 @@ job_outcome = col6.selectbox(
     index=0,
 )
 
-# vehicle compliance check
 vehicle_check = check_vehicle_compliance(vehicle_reg)
 
 if vehicle_reg and str(vehicle_reg).strip():
