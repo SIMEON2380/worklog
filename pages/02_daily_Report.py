@@ -1,12 +1,16 @@
 import streamlit as st
 import pandas as pd
+import requests
 from datetime import date
 
 from worklog.config import Config
 from worklog.db import make_db
 from worklog.auth import ensure_default_user
 from worklog.ui import require_login, display_jobs_table
-from worklog.reporting import compute_totals  # ✅ new
+from worklog.reporting import compute_totals
+
+API_URL = "http://127.0.0.1:8000"
+API_KEY = "supersecret123"
 
 cfg = Config()
 DB = make_db(cfg)
@@ -19,12 +23,45 @@ require_login()
 
 st.subheader("Daily Report")
 
-df = DB["read_all"]()
+try:
+    response = requests.get(
+        f"{API_URL}/jobs",
+        headers={"x-api-key": API_KEY},
+        timeout=15,
+    )
+
+    if response.status_code != 200:
+        st.error(f"API failed: {response.status_code}")
+        st.write(response.text)
+        st.stop()
+
+    payload = response.json()
+
+    if isinstance(payload, dict) and "data" in payload:
+        records = payload["data"]
+    elif isinstance(payload, list):
+        records = payload
+    else:
+        st.error("Unexpected API response format.")
+        st.write(payload)
+        st.stop()
+
+    df = pd.DataFrame(records)
+
+except Exception as e:
+    st.error(f"Failed to load jobs from API: {e}")
+    st.stop()
+
 today = date.today()
 
 if df.empty:
     st.info("No jobs found.")
     st.write(f"Date: {today.isoformat()}")
+    st.stop()
+
+if "work_date" not in df.columns:
+    st.error("API response does not include 'work_date'.")
+    st.write(df)
     st.stop()
 
 df = df.copy()
@@ -37,7 +74,6 @@ options = [today] + [d for d in all_days if d != today]
 selected = st.selectbox("Select day", options, index=0)
 sub = df[df["work_date"] == selected].copy()
 
-# ✅ centralised totals (same for daily/weekly/monthly)
 t = compute_totals(sub)
 
 c1, c2, c3, c4, c5, c6, c7 = st.columns(7)

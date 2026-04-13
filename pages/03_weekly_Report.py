@@ -1,5 +1,6 @@
 import streamlit as st
 import pandas as pd
+import requests
 from datetime import date, timedelta
 
 from worklog.config import Config
@@ -7,6 +8,9 @@ from worklog.db import make_db
 from worklog.auth import ensure_default_user
 from worklog.ui import require_login, display_jobs_table
 from worklog.reporting import compute_totals, format_week_range
+
+API_URL = "http://127.0.0.1:8000"
+API_KEY = "supersecret123"
 
 cfg = Config()
 DB = make_db(cfg)
@@ -55,7 +59,35 @@ def actual_paid_received_in_week(df: pd.DataFrame, week_start: date) -> float:
     return round(float(total), 2)
 
 
-df = DB["read_all"]()
+try:
+    response = requests.get(
+        f"{API_URL}/jobs",
+        headers={"x-api-key": API_KEY},
+        timeout=15,
+    )
+
+    if response.status_code != 200:
+        st.error(f"API failed: {response.status_code}")
+        st.write(response.text)
+        st.stop()
+
+    payload = response.json()
+
+    if isinstance(payload, dict) and "data" in payload:
+        records = payload["data"]
+    elif isinstance(payload, list):
+        records = payload
+    else:
+        st.error("Unexpected API response format.")
+        st.write(payload)
+        st.stop()
+
+    df = pd.DataFrame(records)
+
+except Exception as e:
+    st.error(f"Failed to load jobs from API: {e}")
+    st.stop()
+
 today = date.today()
 current_week_start = today - timedelta(days=today.weekday())
 
@@ -64,8 +96,12 @@ if df.empty:
     st.write(f"Week starting: {current_week_start.isoformat()}")
     st.stop()
 
-df = df.copy()
+if "work_date" not in df.columns:
+    st.error("API response does not include 'work_date'.")
+    st.write(df)
+    st.stop()
 
+df = df.copy()
 df["work_date"] = pd.to_datetime(df["work_date"], errors="coerce").dt.date
 df = df.dropna(subset=["work_date"])
 
