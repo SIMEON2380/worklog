@@ -1,13 +1,15 @@
 import sqlite3
 from datetime import date
 import requests
-
 import streamlit as st
 
 from worklog.auth import ensure_default_user
 from worklog.config import Config
 from worklog.db import make_db
 from worklog.ui import require_login, check_vehicle_compliance
+
+API_URL = "http://127.0.0.1:8000"
+API_KEY = "supersecret123"
 
 cfg = Config()
 DB = make_db(cfg)
@@ -172,13 +174,35 @@ if save_clicked:
         }
 
         try:
-            DB["insert_row"](row)
-            st.success(f"Job {clean_job_number} saved successfully.")
-            st.stop()
+            response = requests.post(
+                f"{API_URL}/jobs",
+                json=row,
+                headers={"x-api-key": API_KEY},
+                timeout=15,
+            )
+
+            if response.status_code == 201:
+                st.success(f"Job {clean_job_number} saved via API ✅")
+                st.stop()
+            else:
+                st.warning("API failed, falling back to DB...")
+                DB["insert_row"](row)
+                st.success(f"Job {clean_job_number} saved locally.")
+                st.stop()
 
         except sqlite3.IntegrityError:
             st.error(
                 f"Job {clean_job_number} for {clean_work_date} already exists in the database."
             )
         except Exception as e:
-            st.error(f"Save failed: {e}")
+            st.warning("API error, falling back to DB...")
+            try:
+                DB["insert_row"](row)
+                st.success(f"Job {clean_job_number} saved locally.")
+                st.stop()
+            except sqlite3.IntegrityError:
+                st.error(
+                    f"Job {clean_job_number} for {clean_work_date} already exists in the database."
+                )
+            except Exception as db_error:
+                st.error(f"Save failed: {db_error}")
