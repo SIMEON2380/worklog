@@ -1,3 +1,4 @@
+import os
 import streamlit as st
 import pandas as pd
 import requests
@@ -9,8 +10,8 @@ from worklog.auth import ensure_default_user
 from worklog.ui import require_login, display_jobs_table
 from worklog.reporting import compute_totals
 
-API_URL = "http://127.0.0.1:8000"
-API_KEY = "supersecret123"
+API_URL = os.getenv("WORKLOG_API_URL", "http://127.0.0.1:8000")
+API_KEY = os.getenv("WORKLOG_API_KEY", "supersecret123")
 
 cfg = Config()
 DB = make_db(cfg)

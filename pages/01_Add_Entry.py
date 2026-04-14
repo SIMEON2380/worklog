@@ -1,3 +1,4 @@
+import os
 import sqlite3
 from datetime import date
 import requests
@@ -8,8 +9,8 @@ from worklog.config import Config
 from worklog.db import make_db
 from worklog.ui import require_login, check_vehicle_compliance
 
-API_URL = "http://127.0.0.1:8000"
-API_KEY = "supersecret123"
+API_URL = os.getenv("WORKLOG_API_URL", "http://127.0.0.1:8000")
+API_KEY = os.getenv("WORKLOG_API_KEY", "supersecret123")
 
 cfg = Config()
 DB = make_db(cfg)
