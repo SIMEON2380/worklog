@@ -1,6 +1,6 @@
 import os
-import sqlite3
 from datetime import date
+
 import requests
 import streamlit as st
 
@@ -152,7 +152,7 @@ if save_clicked:
     if missing_fields:
         st.error("Please complete these required fields: " + ", ".join(missing_fields))
     else:
-        row = {
+        payload = {
             "work_date": clean_work_date,
             "job_id": clean_job_number,
             "category": job_type,
@@ -166,7 +166,6 @@ if save_clicked:
             "auth_code": clean_auth_code,
             "job_outcome": job_outcome,
             "job_status": job_status,
-            "status": job_status,
             "waiting_time": clean_waiting_time,
             "waiting_hours": float(calc_waiting_hours),
             "waiting_amount": float(calc_waiting_amount),
@@ -177,14 +176,14 @@ if save_clicked:
         try:
             response = requests.post(
                 f"{API_URL}/jobs",
-                json=row,
+                json=payload,
                 headers={"x-api-key": API_KEY},
                 timeout=15,
             )
 
             if response.status_code == 201:
                 st.success(f"Job {clean_job_number} saved via API ✅")
-                st.stop()
+                st.rerun()
             else:
                 st.error(f"API failed: {response.status_code}")
                 st.write(response.text)

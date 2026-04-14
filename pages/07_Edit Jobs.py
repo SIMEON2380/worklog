@@ -1,11 +1,17 @@
-import streamlit as st
-import pandas as pd
+import os
 from datetime import date
+
+import pandas as pd
+import requests
+import streamlit as st
 
 from worklog.config import Config
 from worklog.db import make_db
 from worklog.auth import ensure_default_user
 from worklog.ui import require_login
+
+API_URL = os.getenv("WORKLOG_API_URL", "http://127.0.0.1:8000")
+API_KEY = os.getenv("WORKLOG_API_KEY", "supersecret123")
 
 cfg = Config()
 DB = make_db(cfg)
@@ -19,17 +25,7 @@ require_login()
 st.subheader("Edit Jobs (Form)")
 
 
-# -------------------------
-# Helpers
-# -------------------------
 def parse_wait_range_to_hours(s: str) -> float:
-    """
-    Accepts:
-      "10-11" -> 1.0
-      "10:30-12:00" -> 1.5
-      "10 - 11" -> 1.0
-    Returns 0.0 if invalid.
-    """
     if not s:
         return 0.0
 
@@ -55,9 +51,6 @@ def parse_wait_range_to_hours(s: str) -> float:
         return 0.0
 
 
-# -------------------------
-# Session state for clear-after-save
-# -------------------------
 if "edit_job_search" not in st.session_state:
     st.session_state.edit_job_search = ""
 
@@ -73,7 +66,25 @@ if st.session_state.clear_edit_form_after_save:
     st.session_state.clear_edit_form_after_save = False
 
 
-df = DB["read_all"]().copy()
+def load_jobs_df() -> pd.DataFrame:
+    res = requests.get(
+        f"{API_URL}/jobs",
+        headers={"x-api-key": API_KEY},
+        timeout=15,
+    )
+    res.raise_for_status()
+    data = res.json()
+    if not isinstance(data, list):
+        return pd.DataFrame()
+    return pd.DataFrame(data)
+
+
+try:
+    df = load_jobs_df().copy()
+except Exception as e:
+    st.error(f"Failed to load jobs from API: {e}")
+    st.stop()
+
 if df.empty:
     st.info("No jobs found.")
     st.stop()
@@ -82,27 +93,22 @@ if "id" not in df.columns:
     st.error("Missing 'id' column in dataset. Cannot edit safely.")
     st.stop()
 
-# Normalize dates for UI
 if "work_date" in df.columns:
     df["work_date"] = pd.to_datetime(df["work_date"], errors="coerce").dt.date
 
 if "paid_date" in df.columns:
     df["paid_date"] = pd.to_datetime(df["paid_date"], errors="coerce").dt.date
 
-# Prefer job_status if present, else status
 STATUS_COL = "job_status" if "job_status" in df.columns else ("status" if "status" in df.columns else None)
-
 OUTCOME_OPTIONS = ["Completed", "Aborted", "Withdraw", "Fail"]
 
-# -------------------------
-# Pick a job
-# -------------------------
 left, right = st.columns([2, 3])
 
 job_search = left.text_input(
     "Search by Job Number / Vehicle Reg (optional)",
     key="edit_job_search",
 )
+
 filtered = df.copy()
 
 if job_search.strip():
@@ -148,14 +154,12 @@ if choice is None:
     st.stop()
 
 job = rows[choice]
+job_id_for_api = str(job.get("job_id") or "")
 row_id = int(job["id"])
 
 st.caption(f"Selected Row ID: {row_id}")
 st.divider()
 
-# -------------------------
-# Edit form (same style as Add Entry)
-# -------------------------
 with st.form("edit_job_form"):
     col1, col2, col3 = st.columns(3)
 
@@ -212,7 +216,6 @@ with st.form("edit_job_form"):
     )
 
     col13, col14, col15 = st.columns(3)
-
     waiting_time = col13.text_input(
         "Waiting Time (e.g. 10-11 or 09:00-11:30)",
         value=str(job.get("waiting_time") or ""),
@@ -221,7 +224,7 @@ with st.form("edit_job_form"):
     calc_waiting_hours = float(parse_wait_range_to_hours(waiting_time))
     calc_waiting_amount = float(calc_waiting_hours) * float(getattr(cfg, "WAITING_RATE", 0.0))
 
-    waiting_hours = col14.number_input(
+    col14.number_input(
         "Waiting Hours (auto)",
         min_value=0.0,
         step=0.5,
@@ -229,7 +232,7 @@ with st.form("edit_job_form"):
         disabled=True,
     )
 
-    waiting_amount = col15.number_input(
+    col15.number_input(
         "Waiting Amount (£) (auto)",
         min_value=0.0,
         step=0.5,
@@ -245,15 +248,15 @@ with st.form("edit_job_form"):
         min_value=0.0,
         step=1.0,
         value=add_pay_value,
-        disabled=("add_pay" not in df.columns),
-        help=None if "add_pay" in df.columns else "DB column add_pay not found. Run ALTER TABLE to add it.",
     )
 
     hours = col17.number_input(
         "Hours (if used)",
         min_value=0.0,
         step=0.5,
-        value=float(job.get("hours") or 0.0),
+        value=float(job.get("hours") or 0.0) if "hours" in df.columns else 0.0,
+        disabled=("hours" not in df.columns),
+        help=None if "hours" in df.columns else "DB/API does not currently expose an hours field.",
     )
 
     existing_paid_date = job.get("paid_date") if "paid_date" in df.columns else None
@@ -269,7 +272,7 @@ with st.form("edit_job_form"):
         help=(
             "Auto-fills to today when status is Paid, but you can change it manually."
             if "paid_date" in df.columns
-            else "DB column paid_date not found."
+            else "DB/API does not currently expose a paid_date field."
         ),
     )
 
@@ -298,13 +301,14 @@ with st.form("edit_job_form"):
                 return
             if old_cmp == new_cmp:
                 return
+
             diffs[db_col] = new_val
 
         set_if_changed("work_date", work_date.isoformat() if work_date else None)
         set_if_changed("job_id", job_number.strip() if job_number else None)
         set_if_changed("category", job_type)
         set_if_changed("vehicle_description", vehicle_description.strip() if vehicle_description else None)
-        set_if_changed("vehicle_reg", vehicle_reg.strip() if vehicle_reg else None)
+        set_if_changed("vehicle_reg", vehicle_reg.strip().upper() if vehicle_reg else None)
         set_if_changed("job_outcome", job_outcome)
         set_if_changed("collection_from", collection_from.strip() if collection_from else None)
         set_if_changed("delivery_to", delivery_to.strip() if delivery_to else None)
@@ -316,11 +320,10 @@ with st.form("edit_job_form"):
         set_if_changed("waiting_time", waiting_time.strip() if waiting_time else None)
         set_if_changed("waiting_hours", float(calc_waiting_hours))
         set_if_changed("waiting_amount", float(calc_waiting_amount))
+        set_if_changed("add_pay", float(add_pay))
 
-        if "add_pay" in df.columns:
-            set_if_changed("add_pay", float(add_pay))
-
-        set_if_changed("hours", float(hours))
+        if "hours" in df.columns:
+            set_if_changed("hours", float(hours))
 
         if "paid_date" in df.columns:
             if str(job_status).strip().lower() == "paid":
@@ -332,28 +335,34 @@ with st.form("edit_job_form"):
         set_if_changed("comments", comments.strip() if comments else None)
 
         if STATUS_COL:
-            set_if_changed(STATUS_COL, job_status)
-            if STATUS_COL == "job_status" and "status" in df.columns:
-                set_if_changed("status", job_status)
-            if STATUS_COL == "status" and "job_status" in df.columns:
-                set_if_changed("job_status", job_status)
+            set_if_changed("job_status", job_status)
 
         if diffs:
-            DB["update_row"](row_id, diffs)
+            try:
+                payload = {"job_id": job_number.strip() if job_number else job_id_for_api, **diffs}
 
-            # Clear field mechanism after save
-            st.session_state.clear_edit_form_after_save = True
+                response = requests.put(
+                    f"{API_URL}/jobs/{job_id_for_api}",
+                    json=payload,
+                    headers={"x-api-key": API_KEY},
+                    timeout=15,
+                )
 
-            st.success("Saved. Reports will reflect this immediately.")
-            st.rerun()
+                if response.status_code == 200:
+                    st.session_state.clear_edit_form_after_save = True
+                    st.success("Saved via API. Reports will reflect this immediately.")
+                    st.rerun()
+                else:
+                    st.error(f"API update failed: {response.status_code}")
+                    st.write(response.text)
+
+            except Exception as e:
+                st.error(f"Save failed: {e}")
         else:
             st.info("No changes detected.")
 
 st.divider()
 
-# -------------------------
-# Delete selected job
-# -------------------------
 st.markdown("### Delete Selected Job")
 st.error("This permanently deletes the selected job from the database.")
 
@@ -363,6 +372,19 @@ if st.button("Delete selected job"):
     if not delete_confirm:
         st.warning("Tick the confirmation box before deleting.")
     else:
-        DB["delete_row"](row_id)
-        st.success(f"Job row #{row_id} deleted successfully.")
-        st.rerun()
+        try:
+            response = requests.delete(
+                f"{API_URL}/jobs/{job_id_for_api}",
+                headers={"x-api-key": API_KEY},
+                timeout=15,
+            )
+
+            if response.status_code == 200:
+                st.success(f"Job row #{row_id} deleted successfully via API.")
+                st.rerun()
+            else:
+                st.error(f"API delete failed: {response.status_code}")
+                st.write(response.text)
+
+        except Exception as e:
+            st.error(f"Delete failed: {e}")

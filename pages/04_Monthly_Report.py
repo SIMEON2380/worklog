@@ -1,11 +1,11 @@
 import os
-import streamlit as st
-import pandas as pd
-import requests
 from datetime import date
 
+import pandas as pd
+import requests
+import streamlit as st
+
 from worklog.config import Config
-from worklog.db import make_db
 from worklog.auth import ensure_default_user
 from worklog.ui import require_login
 from worklog.reporting import compute_totals
@@ -14,27 +14,24 @@ API_URL = os.getenv("WORKLOG_API_URL", "http://127.0.0.1:8000")
 API_KEY = os.getenv("WORKLOG_API_KEY", "supersecret123")
 
 cfg = Config()
-DB = make_db(cfg)
 
 st.set_page_config(page_title=f"{cfg.APP_TITLE} - Monthly Report", layout="wide")
 
-DB["ensure_schema"]()
 ensure_default_user(cfg)
 require_login()
 
 st.subheader("Monthly Report")
 
+# -------------------------
+# Load data from API
+# -------------------------
 try:
     response = requests.get(
         f"{API_URL}/jobs",
         headers={"x-api-key": API_KEY},
         timeout=15,
     )
-
-    if response.status_code != 200:
-        st.error(f"API failed: {response.status_code}")
-        st.write(response.text)
-        st.stop()
+    response.raise_for_status()
 
     payload = response.json()
 
@@ -53,6 +50,9 @@ except Exception as e:
     st.error(f"Failed to load jobs from API: {e}")
     st.stop()
 
+# -------------------------
+# Prepare data
+# -------------------------
 today = date.today()
 current_month = today.strftime("%Y-%m")
 
@@ -61,12 +61,11 @@ if df.empty:
     st.write(f"Month: {current_month}")
     st.stop()
 
-df = df.copy()
-
 if "work_date" not in df.columns:
     st.error("Missing 'work_date' column in dataset.")
     st.stop()
 
+df = df.copy()
 df["work_date"] = pd.to_datetime(df["work_date"], errors="coerce")
 df = df.dropna(subset=["work_date"])
 
@@ -77,6 +76,9 @@ if df.empty:
 df["_month"] = df["work_date"].dt.to_period("M").astype(str)
 df["work_date"] = df["work_date"].dt.date
 
+# -------------------------
+# Month selector
+# -------------------------
 all_months = sorted(df["_month"].unique().tolist(), reverse=True)
 options = [current_month] + [m for m in all_months if m != current_month]
 
@@ -90,7 +92,10 @@ if sub.empty:
     st.info("No jobs found for this month.")
     st.stop()
 
-totals = compute_totals(sub, waiting_rate=cfg.WAITING_RATE)
+# -------------------------
+# Metrics
+# -------------------------
+totals = compute_totals(sub)
 
 c1, c2, c3, c4, c5, c6, c7 = st.columns(7)
 c1.metric("Job Amount", f"£{totals.total_job_amount:,.2f}")
@@ -103,18 +108,9 @@ c7.metric("Total Received", f"£{totals.total_received:,.2f}")
 
 st.divider()
 
+# -------------------------
+# Table
+# -------------------------
 sub = sub.drop(columns=["_month"], errors="ignore")
-
-sub = sub.drop(
-    columns=[
-        "description",
-        "hours",
-        "created_at",
-        "postcode",
-        "customer_name",
-        "site_address",
-    ],
-    errors="ignore",
-)
 
 st.dataframe(sub, use_container_width=True)

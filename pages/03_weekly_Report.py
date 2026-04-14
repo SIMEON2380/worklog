@@ -1,11 +1,11 @@
 import os
-import streamlit as st
-import pandas as pd
-import requests
 from datetime import date, timedelta
 
+import pandas as pd
+import requests
+import streamlit as st
+
 from worklog.config import Config
-from worklog.db import make_db
 from worklog.auth import ensure_default_user
 from worklog.ui import require_login, display_jobs_table
 from worklog.reporting import compute_totals, format_week_range
@@ -14,11 +14,9 @@ API_URL = os.getenv("WORKLOG_API_URL", "http://127.0.0.1:8000")
 API_KEY = os.getenv("WORKLOG_API_KEY", "supersecret123")
 
 cfg = Config()
-DB = make_db(cfg)
 
 st.set_page_config(page_title=f"{cfg.APP_TITLE} - Weekly Report", layout="wide")
 
-DB["ensure_schema"]()
 ensure_default_user(cfg)
 require_login()
 
@@ -66,11 +64,7 @@ try:
         headers={"x-api-key": API_KEY},
         timeout=15,
     )
-
-    if response.status_code != 200:
-        st.error(f"API failed: {response.status_code}")
-        st.write(response.text)
-        st.stop()
+    response.raise_for_status()
 
     payload = response.json()
 

@@ -9,6 +9,7 @@ from worklog.ui import require_login, display_jobs_table
 
 cfg = Config()
 DB = make_db(cfg)
+API_URL = "http://127.0.0.1:8000"
 
 st.set_page_config(page_title=cfg.APP_TITLE, layout="wide")
 
@@ -43,22 +44,18 @@ if not st.session_state.auth_user:
 st.title("Dashboard")
 st.caption("All jobs in the database")
 
-df = DB["read_all"]()
+try:
+    res = requests.get(
+        f"{API_URL}/jobs",
+        headers={"x-api-key": "supersecret123"},
+        timeout=10,
+    )
+    res.raise_for_status()
+    df = pd.DataFrame(res.json())
+except Exception as e:
+    st.error(f"Failed to load jobs from API: {e}")
+    df = pd.DataFrame()
+
 display_jobs_table(cfg, df, caption=None)
 
-st.subheader("JOB API TEST")
 
-job_id = "11957890"
-
-try:
-    res = requests.get(f"{API_URL}/jobs/{job_id}")
-    
-    st.write("Status:", res.status_code)
-
-    if res.status_code == 200:
-        st.write("Job data:", res.json())
-    else:
-        st.warning("Job not found")
-
-except Exception as e:
-    st.error(f"Error: {e}")

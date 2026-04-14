@@ -5,9 +5,12 @@ from backend.schemas import JobCreate, JobUpdate
 from backend.services import (
     create_job_record,
     delete_job_record,
+    delete_job_row_record,
     get_job_by_id,
+    get_job_by_row_id,
     list_jobs,
     update_job_record,
+    update_job_row_record,
 )
 
 app = FastAPI()
@@ -67,6 +70,20 @@ def get_job(job_id: str, x_api_key: str | None = Header(default=None)):
         )
 
 
+@app.get("/jobs/row/{row_id}")
+def get_job_row(row_id: int, x_api_key: str | None = Header(default=None)):
+    verify_api_key(x_api_key)
+    try:
+        return get_job_by_row_id(row_id)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=str(e)
+        )
+
+
 @app.post("/jobs", status_code=status.HTTP_201_CREATED)
 def create_job(job: JobCreate, x_api_key: str | None = Header(default=None)):
     verify_api_key(x_api_key)
@@ -95,11 +112,39 @@ def update_job(job_id: str, job: JobUpdate, x_api_key: str | None = Header(defau
         )
 
 
+@app.put("/jobs/row/{row_id}")
+def update_job_row(row_id: int, job: JobUpdate, x_api_key: str | None = Header(default=None)):
+    verify_api_key(x_api_key)
+    try:
+        return update_job_row_record(row_id, job)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=str(e)
+        )
+
+
 @app.delete("/jobs/{job_id}")
 def delete_job(job_id: str, x_api_key: str | None = Header(default=None)):
     verify_api_key(x_api_key)
     try:
         return delete_job_record(job_id)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=str(e)
+        )
+
+
+@app.delete("/jobs/row/{row_id}")
+def delete_job_row(row_id: int, x_api_key: str | None = Header(default=None)):
+    verify_api_key(x_api_key)
+    try:
+        return delete_job_row_record(row_id)
     except HTTPException:
         raise
     except Exception as e:

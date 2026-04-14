@@ -98,25 +98,24 @@ class JobCreate(BaseModel):
     @classmethod
     def validate_waiting_time(cls, value):
         return validate_waiting_time_value(value)
-
-
 class JobUpdate(BaseModel):
-    work_date: str
-    amount: float = 0.0
+    work_date: Optional[str] = None
+    job_id: Optional[str] = None
+    amount: Optional[float] = None
     category: Optional[str] = None
-    job_status: Optional[str] = "Start"
+    job_status: Optional[str] = None
     waiting_time: Optional[str] = None
-    waiting_hours: Optional[float] = 0.0
-    waiting_amount: Optional[float] = 0.0
+    waiting_hours: Optional[float] = None
+    waiting_amount: Optional[float] = None
     vehicle_description: Optional[str] = None
     vehicle_reg: Optional[str] = None
     collection_from: Optional[str] = None
     delivery_to: Optional[str] = None
     job_expenses: Optional[str] = None
-    expenses_amount: Optional[float] = 0.0
+    expenses_amount: Optional[float] = None
     auth_code: Optional[str] = None
     comments: Optional[str] = None
-    add_pay: Optional[float] = 0.0
+    add_pay: Optional[float] = None
     paid_date: Optional[str] = None
     job_outcome: Optional[str] = None
 

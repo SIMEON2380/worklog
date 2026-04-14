@@ -249,71 +249,6 @@ def update_job_record(job_id: str, job):
     cur = conn.cursor()
 
     cur.execute("""
-        SELECT 1
-        FROM work_logs
-        WHERE job_id = ?
-        LIMIT 1
-    """, (job_id,))
-
-    existing = cur.fetchone()
-    if not existing:
-        conn.close()
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="job not found"
-        )
-
-    waiting_time = normalise_text(job.waiting_time)
-    waiting_hours = parse_wait_range_to_hours(waiting_time or "")
-    waiting_amount = round(waiting_hours * WAITING_RATE, 2)
-
-    cur.execute("""
-        UPDATE work_logs
-        SET
-            work_date = ?,
-            amount = ?,
-            category = ?,
-            job_status = ?,
-            waiting_time = ?,
-            waiting_hours = ?,
-            waiting_amount = ?,
-            vehicle_description = ?,
-            vehicle_reg = ?,
-            collection_from = ?,
-            delivery_to = ?,
-            job_expenses = ?,
-            expenses_amount = ?,
-            auth_code = ?,
-            comments = ?,
-            add_pay = ?,
-            paid_date = ?,
-            job_outcome = ?
-        WHERE job_id = ?
-    """, (
-        str(job.work_date),
-        job.amount if job.amount is not None else 0.0,
-        normalise_text(job.category),
-        normalise_text(job.job_status) or "Start",
-        waiting_time,
-        waiting_hours,
-        waiting_amount,
-        normalise_vehicle_description(job.vehicle_description),
-        normalise_text(job.vehicle_reg),
-        normalise_text(job.collection_from),
-        normalise_text(job.delivery_to),
-        normalise_job_expenses(job.job_expenses),
-        job.expenses_amount if job.expenses_amount is not None else 0.0,
-        normalise_text(job.auth_code),
-        normalise_text(job.comments),
-        job.add_pay if job.add_pay is not None else 0.0,
-        str(job.paid_date) if job.paid_date else None,
-        normalise_text(job.job_outcome),
-        job_id,
-    ))
-
-    conn.commit()
-
-    cur.execute("""
         SELECT
             id,
             work_date,
@@ -341,6 +276,97 @@ def update_job_record(job_id: str, job):
         LIMIT 1
     """, (job_id,))
 
+    existing = cur.fetchone()
+    if not existing:
+        conn.close()
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="job not found"
+        )
+
+    existing = dict(existing)
+    updates = job.model_dump(exclude_unset=True)
+
+    merged = {**existing, **updates}
+
+    waiting_time = normalise_text(merged.get("waiting_time"))
+    waiting_hours = parse_wait_range_to_hours(waiting_time or "")
+    waiting_amount = round(waiting_hours * WAITING_RATE, 2)
+
+    cur.execute("""
+        UPDATE work_logs
+        SET
+            work_date = ?,
+            job_id = ?,
+            amount = ?,
+            category = ?,
+            job_status = ?,
+            waiting_time = ?,
+            waiting_hours = ?,
+            waiting_amount = ?,
+            vehicle_description = ?,
+            vehicle_reg = ?,
+            collection_from = ?,
+            delivery_to = ?,
+            job_expenses = ?,
+            expenses_amount = ?,
+            auth_code = ?,
+            comments = ?,
+            add_pay = ?,
+            paid_date = ?,
+            job_outcome = ?
+        WHERE id = ?
+    """, (
+        str(merged.get("work_date")),
+        normalise_text(merged.get("job_id")),
+        merged.get("amount") if merged.get("amount") is not None else 0.0,
+        normalise_text(merged.get("category")),
+        normalise_text(merged.get("job_status")) or "Start",
+        waiting_time,
+        waiting_hours,
+        waiting_amount,
+        normalise_vehicle_description(merged.get("vehicle_description")),
+        normalise_text(merged.get("vehicle_reg")),
+        normalise_text(merged.get("collection_from")),
+        normalise_text(merged.get("delivery_to")),
+        normalise_job_expenses(merged.get("job_expenses")),
+        merged.get("expenses_amount") if merged.get("expenses_amount") is not None else 0.0,
+        normalise_text(merged.get("auth_code")),
+        normalise_text(merged.get("comments")),
+        merged.get("add_pay") if merged.get("add_pay") is not None else 0.0,
+        str(merged.get("paid_date")) if merged.get("paid_date") else None,
+        normalise_text(merged.get("job_outcome")),
+        existing["id"],
+    ))
+
+    conn.commit()
+
+    cur.execute("""
+        SELECT
+            id,
+            work_date,
+            job_id,
+            amount,
+            category,
+            job_status,
+            waiting_time,
+            waiting_hours,
+            waiting_amount,
+            vehicle_description,
+            vehicle_reg,
+            collection_from,
+            delivery_to,
+            job_expenses,
+            expenses_amount,
+            auth_code,
+            comments,
+            add_pay,
+            paid_date,
+            job_outcome
+        FROM work_logs
+        WHERE id = ?
+    """, (existing["id"],))
+
     row = cur.fetchone()
     conn.close()
 
@@ -354,8 +380,6 @@ def update_job_record(job_id: str, job):
         "status": "success",
         "data": dict(row)
     }
-
-
 def delete_job_record(job_id: str):
     conn = get_connection()
     cur = conn.cursor()
@@ -386,4 +410,230 @@ def delete_job_record(job_id: str):
     return {
         "status": "success",
         "job_id": job_id
+    }
+def get_job_by_row_id(row_id: int):
+    conn = get_connection()
+    cur = conn.cursor()
+
+    cur.execute("""
+        SELECT
+            id,
+            work_date,
+            job_id,
+            amount,
+            category,
+            job_status,
+            waiting_time,
+            waiting_hours,
+            waiting_amount,
+            vehicle_description,
+            vehicle_reg,
+            collection_from,
+            delivery_to,
+            job_expenses,
+            expenses_amount,
+            auth_code,
+            comments,
+            add_pay,
+            paid_date,
+            job_outcome
+        FROM work_logs
+        WHERE id = ?
+        LIMIT 1
+    """, (row_id,))
+
+    row = cur.fetchone()
+    conn.close()
+
+    if row is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="row not found"
+        )
+
+    return dict(row)
+def get_job_by_row_id(row_id: int):
+    conn = get_connection()
+    cur = conn.cursor()
+
+    cur.execute("""
+        SELECT
+            id,
+            work_date,
+            job_id,
+            amount,
+            category,
+            job_status,
+            waiting_time,
+            waiting_hours,
+            waiting_amount,
+            vehicle_description,
+            vehicle_reg,
+            collection_from,
+            delivery_to,
+            job_expenses,
+            expenses_amount,
+            auth_code,
+            comments,
+            add_pay,
+            paid_date,
+            job_outcome
+        FROM work_logs
+        WHERE id = ?
+        LIMIT 1
+    """, (row_id,))
+
+    row = cur.fetchone()
+    conn.close()
+
+    if row is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="job not found"
+        )
+
+    return dict(row)
+def update_job_row_record(row_id: int, job):
+    conn = get_connection()
+    cur = conn.cursor()
+
+    cur.execute("""
+        SELECT 1
+        FROM work_logs
+        WHERE id = ?
+        LIMIT 1
+    """, (row_id,))
+
+    existing = cur.fetchone()
+    if not existing:
+        conn.close()
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="row not found"
+        )
+
+    waiting_time = normalise_text(job.waiting_time)
+    waiting_hours = parse_wait_range_to_hours(waiting_time or "")
+    waiting_amount = round(waiting_hours * WAITING_RATE, 2)
+
+    cur.execute("""
+        UPDATE work_logs
+        SET
+            work_date = ?,
+            job_id = ?,
+            amount = ?,
+            category = ?,
+            job_status = ?,
+            waiting_time = ?,
+            waiting_hours = ?,
+            waiting_amount = ?,
+            vehicle_description = ?,
+            vehicle_reg = ?,
+            collection_from = ?,
+            delivery_to = ?,
+            job_expenses = ?,
+            expenses_amount = ?,
+            auth_code = ?,
+            comments = ?,
+            add_pay = ?,
+            paid_date = ?,
+            job_outcome = ?
+        WHERE id = ?
+    """, (
+        str(job.work_date),
+        normalise_text(job.job_id),
+        job.amount if job.amount is not None else 0.0,
+        normalise_text(job.category),
+        normalise_text(job.job_status) or "Start",
+        waiting_time,
+        waiting_hours,
+        waiting_amount,
+        normalise_vehicle_description(job.vehicle_description),
+        normalise_text(job.vehicle_reg),
+        normalise_text(job.collection_from),
+        normalise_text(job.delivery_to),
+        normalise_job_expenses(job.job_expenses),
+        job.expenses_amount if job.expenses_amount is not None else 0.0,
+        normalise_text(job.auth_code),
+        normalise_text(job.comments),
+        job.add_pay if job.add_pay is not None else 0.0,
+        str(job.paid_date) if job.paid_date else None,
+        normalise_text(job.job_outcome),
+        row_id,
+    ))
+
+    conn.commit()
+
+    cur.execute("""
+        SELECT
+            id,
+            work_date,
+            job_id,
+            amount,
+            category,
+            job_status,
+            waiting_time,
+            waiting_hours,
+            waiting_amount,
+            vehicle_description,
+            vehicle_reg,
+            collection_from,
+            delivery_to,
+            job_expenses,
+            expenses_amount,
+            auth_code,
+            comments,
+            add_pay,
+            paid_date,
+            job_outcome
+        FROM work_logs
+        WHERE id = ?
+        LIMIT 1
+    """, (row_id,))
+
+    row = cur.fetchone()
+    conn.close()
+
+    if row is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="row not found after update"
+        )
+
+    return {
+        "status": "success",
+        "data": dict(row)
+    }
+
+
+def delete_job_row_record(row_id: int):
+    conn = get_connection()
+    cur = conn.cursor()
+
+    cur.execute("""
+        SELECT 1
+        FROM work_logs
+        WHERE id = ?
+        LIMIT 1
+    """, (row_id,))
+
+    existing = cur.fetchone()
+    if not existing:
+        conn.close()
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="row not found"
+        )
+
+    cur.execute("""
+        DELETE FROM work_logs
+        WHERE id = ?
+    """, (row_id,))
+
+    conn.commit()
+    conn.close()
+
+    return {
+        "status": "success",
+        "row_id": row_id
     }
