@@ -4,6 +4,7 @@ from datetime import date, datetime, timedelta
 from typing import Any, Dict, Optional, Tuple
 
 import pandas as pd
+import requests
 import streamlit as st
 
 from .config import Config
@@ -74,7 +75,6 @@ def check_vehicle_compliance(reg: str) -> Dict[str, Any]:
 # UI <-> DB mapping
 # -------------------------
 def ui_to_db_map(cfg: Config) -> Dict[str, str]:
-    # keep labels exactly as in cfg.UI_COLUMNS (including typos)
     base = {
         "Date": "work_date",
         "job number": "job_id",
@@ -91,8 +91,6 @@ def ui_to_db_map(cfg: Config) -> Dict[str, str]:
         "waiting time": "waiting_time",
         "comments": "comments",
     }
-
-    # extra support column
     base["paid date"] = "paid_date"
     return base
 
@@ -103,12 +101,6 @@ def db_to_ui_map(cfg: Config) -> Dict[str, str]:
 
 
 def to_ui_table(cfg: Config, df_db: pd.DataFrame, include_paid_date: bool = True) -> pd.DataFrame:
-    """
-    UI-formatted dataframe:
-    - keep id (hidden in display, used for edits)
-    - columns in cfg.UI_COLUMNS order + exact labels
-    - optionally append paid date
-    """
     base_cols = ["id"] + list(cfg.UI_COLUMNS)
     if include_paid_date and "paid date" not in base_cols:
         base_cols.append("paid date")
@@ -144,9 +136,6 @@ def to_ui_table(cfg: Config, df_db: pd.DataFrame, include_paid_date: bool = True
 
 
 def ui_row_to_db_fields(cfg: Config, ui_row: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Convert a row dict from UI labels to DB fields.
-    """
     m = ui_to_db_map(cfg)
     out: Dict[str, Any] = {}
     for ui_col, db_col in m.items():
@@ -159,10 +148,6 @@ def ui_row_to_db_fields(cfg: Config, ui_row: Dict[str, Any]) -> Dict[str, Any]:
 # Totals (reports)
 # -------------------------
 def compute_totals(df_db: pd.DataFrame) -> Tuple[float, float, float]:
-    """
-    Backwards-compatible totals:
-      total_job_amount, total_wait_hours, total_wait_amount
-    """
     if df_db is None or df_db.empty:
         return 0.0, 0.0, 0.0
 
@@ -173,9 +158,6 @@ def compute_totals(df_db: pd.DataFrame) -> Tuple[float, float, float]:
 
 
 def show_totals(df_db: pd.DataFrame) -> None:
-    """
-    Kept exactly so existing pages/features don't break.
-    """
     total_job_amount, total_wait_hours, total_wait_amount = compute_totals(df_db)
     c1, c2, c3 = st.columns(3)
     c1.metric("Total job amount", f"£{total_job_amount:,.2f}")
@@ -184,11 +166,6 @@ def show_totals(df_db: pd.DataFrame) -> None:
 
 
 def report_totals(df: pd.DataFrame) -> Dict[str, float]:
-    """
-    Robust totals for reports (used by Daily/Weekly/Monthly):
-      job_amount, wait_hours, wait_pay, expenses, grand_total
-    grand_total = job_amount + wait_pay - expenses
-    """
     if df is None or df.empty:
         return {
             "job_amount": 0.0,
@@ -236,7 +213,7 @@ def display_jobs_table(
 
 
 # -------------------------
-# Editable table (save back to DB)
+# Editable table
 # -------------------------
 def editable_jobs_table(
     cfg: Config,
@@ -244,9 +221,17 @@ def editable_jobs_table(
     df_db: pd.DataFrame,
     key: str,
     allow_type_edit: bool = True,
+    api_url: Optional[str] = None,
+    api_key: Optional[str] = None,
 ) -> None:
     """
-    Inline editor + Save button using db.py update_row(row_id, diffs).
+    Inline editor + Save button.
+
+    If api_url and api_key are provided:
+      saves through FastAPI PUT /jobs/row/{row_id}
+
+    Otherwise:
+      falls back to DB["update_row"] for backwards compatibility.
     """
     if df_db is None or df_db.empty:
         st.info("No rows to show.")
@@ -276,19 +261,28 @@ def editable_jobs_table(
         original = ui_df.set_index("id")
         updated = edited.set_index("id")
         changes = 0
+        errors = []
 
         def same_value(a: Any, b: Any) -> bool:
             if pd.isna(a) and pd.isna(b):
                 return True
             return str(a) == str(b)
 
-        def clean_float(x: Any) -> Optional[float]:
+        def clean_float(x: Any):
             if x in (None, ""):
                 return None
             try:
                 return float(x)
             except Exception:
                 return None
+
+        def clean_date_string(x: Any):
+            if x in (None, ""):
+                return None
+            parsed = pd.to_datetime(x, errors="coerce")
+            if pd.isna(parsed):
+                return None
+            return parsed.date().isoformat()
 
         for row_id in updated.index:
             before = original.loc[row_id].to_dict()
@@ -307,12 +301,7 @@ def editable_jobs_table(
             row_db = ui_row_to_db_fields(cfg, changed_fields)
 
             if "work_date" in row_db:
-                wd = row_db.get("work_date")
-                if wd in (None, ""):
-                    row_db["work_date"] = None
-                else:
-                    wd_parsed = pd.to_datetime(wd, errors="coerce")
-                    row_db["work_date"] = wd_parsed.date().isoformat() if pd.notna(wd_parsed) else None
+                row_db["work_date"] = clean_date_string(row_db.get("work_date"))
 
             if "amount" in row_db:
                 row_db["amount"] = clean_float(row_db.get("amount"))
@@ -320,8 +309,40 @@ def editable_jobs_table(
             if "expenses_amount" in row_db:
                 row_db["expenses_amount"] = clean_float(row_db.get("expenses_amount"))
 
-            DB["update_row"](int(row_id), row_db)
+            if "add_pay" in row_db:
+                row_db["add_pay"] = clean_float(row_db.get("add_pay"))
+
+            if api_url and api_key:
+                try:
+                    response = requests.put(
+                        f"{api_url}/jobs/row/{int(row_id)}",
+                        headers={"x-api-key": api_key},
+                        json=row_db,
+                        timeout=20,
+                    )
+                    if response.status_code != 200:
+                        errors.append(f"Row {row_id}: {response.text}")
+                        continue
+                except Exception as e:
+                    errors.append(f"Row {row_id}: {e}")
+                    continue
+            else:
+                try:
+                    DB["update_row"](int(row_id), row_db)
+                except Exception as e:
+                    errors.append(f"Row {row_id}: {e}")
+                    continue
+
             changes += 1
 
-        st.success(f"Saved changes for {changes} job(s).")
-        st.rerun()
+        if errors:
+            st.error("Some changes failed to save.")
+            for err in errors[:5]:
+                st.write(err)
+
+        if changes > 0:
+            st.success(f"Saved changes for {changes} job(s).")
+            st.rerun()
+
+        if changes == 0 and not errors:
+            st.info("No changes to save.")

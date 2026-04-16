@@ -1,4 +1,3 @@
-import math
 import os
 
 import pandas as pd
@@ -25,9 +24,6 @@ require_login()
 st.subheader("Job Status Dashboard")
 
 
-# -------------------------
-# Helpers
-# -------------------------
 def safe_text(series: pd.Series) -> pd.Series:
     return series.fillna("").astype(str).str.strip()
 
@@ -50,25 +46,10 @@ def compute_pending_money(frame: pd.DataFrame) -> float:
 
     out = frame.copy()
 
-    if "amount" in out.columns:
-        out["amount"] = safe_num(out["amount"])
-    else:
-        out["amount"] = 0.0
-
-    if "waiting_amount" in out.columns:
-        out["waiting_amount"] = safe_num(out["waiting_amount"])
-    else:
-        out["waiting_amount"] = 0.0
-
-    if "add_pay" in out.columns:
-        out["add_pay"] = safe_num(out["add_pay"])
-    else:
-        out["add_pay"] = 0.0
-
-    if "expenses_amount" in out.columns:
-        out["expenses_amount"] = safe_num(out["expenses_amount"])
-    else:
-        out["expenses_amount"] = 0.0
+    out["amount"] = safe_num(out["amount"]) if "amount" in out.columns else 0.0
+    out["waiting_amount"] = safe_num(out["waiting_amount"]) if "waiting_amount" in out.columns else 0.0
+    out["add_pay"] = safe_num(out["add_pay"]) if "add_pay" in out.columns else 0.0
+    out["expenses_amount"] = safe_num(out["expenses_amount"]) if "expenses_amount" in out.columns else 0.0
 
     total = (
         float(out["amount"].sum())
@@ -87,12 +68,9 @@ def format_date_column(frame: pd.DataFrame, col_name: str = "work_date") -> pd.D
 
 
 def fetch_jobs(params: dict) -> tuple[pd.DataFrame, dict]:
-    api_endpoint = f"{API_URL}/jobs"
-    headers = {"x-api-key": API_KEY}
-
     response = requests.get(
-        api_endpoint,
-        headers=headers,
+        f"{API_URL}/jobs",
+        headers={"x-api-key": API_KEY},
         params=params,
         timeout=20,
     )
@@ -121,65 +99,31 @@ def fetch_jobs(params: dict) -> tuple[pd.DataFrame, dict]:
     else:
         raise RuntimeError(f"Unexpected API response format: {payload}")
 
-    df = pd.DataFrame(records).copy()
-    return df, meta
+    return pd.DataFrame(records).copy(), meta
 
 
-# -------------------------
-# Filter options
-# -------------------------
 status_options = ["All", "Paid", "Pending", "Start", "Completed", "Aborted", "Withdraw"]
 outcome_options = ["All", "Completed", "Aborted", "Withdraw", "Fail"]
-
-job_type_options = getattr(
-    cfg,
-    "JOB_TYPE_OPTIONS",
-    ["STRD Trade Plate", "Inspect and Collect", "Inspect and Collect 2"],
-)
-type_options = ["All"] + list(job_type_options)
-
+type_options = ["All"] + list(getattr(cfg, "JOB_TYPE_OPTIONS", []))
 page_size_options = [25, 50, 100, 200]
 
+if "job_status_page_num" not in st.session_state:
+    st.session_state["job_status_page_num"] = 1
 
-# -------------------------
-# API filter controls
-# -------------------------
 f1, f2, f3, f4 = st.columns(4)
 
-selected_api_status = f1.selectbox(
-    "Payment Status",
-    options=status_options,
-    index=0,
-)
-
-selected_outcome = f2.selectbox(
-    "Job Outcome",
-    options=outcome_options,
-    index=0,
-)
-
-selected_type = f3.selectbox(
-    "Job Type",
-    options=type_options,
-    index=0,
-)
-
+selected_api_status = f1.selectbox("Payment Status", options=status_options, index=0)
+selected_outcome = f2.selectbox("Job Outcome", options=outcome_options, index=0)
+selected_type = f3.selectbox("Job Type", options=type_options, index=0)
 search_text = f4.text_input("Search Job Number / Vehicle Reg / Vehicle")
 
 d1, d2, d3 = st.columns(3)
-
 selected_start_date = d1.date_input("Start Date", value=None)
 selected_end_date = d2.date_input("End Date", value=None)
 page_size = d3.selectbox("Rows Per Page", options=page_size_options, index=1)
 
-current_page = st.number_input("Page", min_value=1, value=1, step=1)
-
-
-# -------------------------
-# Build API params
-# -------------------------
 params = {
-    "page": int(current_page),
+    "page": int(st.session_state["job_status_page_num"]),
     "page_size": int(page_size),
 }
 
@@ -201,56 +145,36 @@ if selected_start_date is not None:
 if selected_end_date is not None:
     params["end_date"] = pd.to_datetime(selected_end_date).strftime("%Y-%m-%d")
 
-
-# -------------------------
-# Load jobs from API
-# -------------------------
 try:
     df, meta = fetch_jobs(params)
 except Exception as e:
     st.error(f"Failed to load jobs from API: {e}")
     st.stop()
 
+total_rows = int(meta.get("total", 0))
+current_page_value = int(meta.get("page", 1))
+page_size_value = int(meta.get("page_size", 50))
+total_pages = max(int(meta.get("total_pages", 1)), 1)
+
+if st.session_state["job_status_page_num"] > total_pages:
+    st.session_state["job_status_page_num"] = total_pages
+    st.rerun()
+
 if df.empty:
     st.info("No jobs found for the selected filters.")
     st.stop()
 
-
-# -------------------------
-# Normalise columns
-# -------------------------
 status_col = get_status_col(df)
-
 if status_col is None:
     st.error("No status column found in the data.")
     st.stop()
 
 df[status_col] = safe_text(df[status_col])
-
-if "job_outcome" in df.columns:
-    df["job_outcome"] = safe_text(df["job_outcome"])
-else:
-    df["job_outcome"] = ""
-
-if "category" in df.columns:
-    df["category"] = safe_text(df["category"])
-else:
-    df["category"] = ""
-
-if "vehicle_reg" in df.columns:
-    df["vehicle_reg"] = safe_text(df["vehicle_reg"])
-else:
-    df["vehicle_reg"] = ""
-
-if "job_id" in df.columns:
-    df["job_id"] = safe_text(df["job_id"])
-else:
-    df["job_id"] = ""
-
-if "vehicle_description" in df.columns:
-    df["vehicle_description"] = safe_text(df["vehicle_description"])
-else:
-    df["vehicle_description"] = ""
+df["job_outcome"] = safe_text(df["job_outcome"]) if "job_outcome" in df.columns else ""
+df["category"] = safe_text(df["category"]) if "category" in df.columns else ""
+df["vehicle_reg"] = safe_text(df["vehicle_reg"]) if "vehicle_reg" in df.columns else ""
+df["job_id"] = safe_text(df["job_id"]) if "job_id" in df.columns else ""
+df["vehicle_description"] = safe_text(df["vehicle_description"]) if "vehicle_description" in df.columns else ""
 
 if "work_date" in df.columns:
     df["work_date"] = pd.to_datetime(df["work_date"], errors="coerce")
@@ -262,17 +186,7 @@ df["amount"] = safe_num(df["amount"]) if "amount" in df.columns else 0.0
 df["waiting_amount"] = safe_num(df["waiting_amount"]) if "waiting_amount" in df.columns else 0.0
 df["add_pay"] = safe_num(df["add_pay"]) if "add_pay" in df.columns else 0.0
 df["expenses_amount"] = safe_num(df["expenses_amount"]) if "expenses_amount" in df.columns else 0.0
-
 df["gross_value"] = df["amount"] + df["waiting_amount"] + df["add_pay"] - df["expenses_amount"]
-
-
-# -------------------------
-# API result summary
-# -------------------------
-total_rows = int(meta.get("total", len(df)))
-current_page_value = int(meta.get("page", 1))
-page_size_value = int(meta.get("page_size", len(df)))
-total_pages = int(meta.get("total_pages", 1))
 
 start_row = ((current_page_value - 1) * page_size_value) + 1 if total_rows > 0 else 0
 end_row = min(current_page_value * page_size_value, total_rows)
@@ -282,12 +196,23 @@ st.caption(
     f"(page {current_page_value} of {total_pages})"
 )
 
+nav1, nav2, nav3 = st.columns([1, 1, 2])
+
+with nav1:
+    if st.button("Previous Page", disabled=current_page_value <= 1):
+        st.session_state["job_status_page_num"] = max(1, current_page_value - 1)
+        st.rerun()
+
+with nav2:
+    if st.button("Next Page", disabled=current_page_value >= total_pages):
+        st.session_state["job_status_page_num"] = min(total_pages, current_page_value + 1)
+        st.rerun()
+
+with nav3:
+    st.write(f"Current page: {current_page_value}")
+
 st.divider()
 
-
-# -------------------------
-# Core filtered sets
-# -------------------------
 paid_df = df[df[status_col].str.lower() == "paid"].copy()
 pending_df = df[df[status_col].str.lower() == "pending"].copy()
 aborted_df = df[df["job_outcome"].str.lower() == "aborted"].copy()
@@ -300,10 +225,6 @@ aborted_paid_df = df[
 
 pending_money = compute_pending_money(pending_df)
 
-
-# -------------------------
-# KPI cards
-# -------------------------
 k1, k2, k3, k4, k5, k6 = st.columns(6)
 k1.metric("Page Jobs", int(len(df)))
 k2.metric("Paid", int(len(paid_df)))
@@ -314,10 +235,6 @@ k6.metric("Pending £", f"£{pending_money:,.2f}")
 
 st.divider()
 
-
-# -------------------------
-# Summary tables
-# -------------------------
 left, right = st.columns(2)
 
 with left:
@@ -350,10 +267,6 @@ with right:
 
 st.divider()
 
-
-# -------------------------
-# Action sections
-# -------------------------
 a1, a2 = st.columns(2)
 
 with a1:
@@ -373,8 +286,7 @@ with a1:
             ]
             if c in pending_df.columns
         ]
-        temp = pending_df[show_cols].copy()
-        temp = format_date_column(temp, "work_date")
+        temp = format_date_column(pending_df[show_cols].copy(), "work_date")
         if "gross_value" in temp.columns:
             temp["gross_value"] = pd.to_numeric(temp["gross_value"], errors="coerce").fillna(0).round(2)
         st.dataframe(temp, use_container_width=True, hide_index=True)
@@ -396,8 +308,7 @@ with a2:
             ]
             if c in aborted_paid_df.columns
         ]
-        temp = aborted_paid_df[show_cols].copy()
-        temp = format_date_column(temp, "work_date")
+        temp = format_date_column(aborted_paid_df[show_cols].copy(), "work_date")
         if "gross_value" in temp.columns:
             temp["gross_value"] = pd.to_numeric(temp["gross_value"], errors="coerce").fillna(0).round(2)
         st.dataframe(temp, use_container_width=True, hide_index=True)
@@ -410,8 +321,7 @@ with b1:
         st.info("No withdraw jobs.")
     else:
         show_cols = [c for c in ["work_date", "job_id", "vehicle_reg", "category", "job_outcome", status_col] if c in withdraw_df.columns]
-        temp = withdraw_df[show_cols].copy()
-        temp = format_date_column(temp, "work_date")
+        temp = format_date_column(withdraw_df[show_cols].copy(), "work_date")
         st.dataframe(temp, use_container_width=True, hide_index=True)
 
 with b2:
@@ -420,16 +330,11 @@ with b2:
         st.info("No failed jobs.")
     else:
         show_cols = [c for c in ["work_date", "job_id", "vehicle_reg", "category", "job_outcome", status_col] if c in fail_df.columns]
-        temp = fail_df[show_cols].copy()
-        temp = format_date_column(temp, "work_date")
+        temp = format_date_column(fail_df[show_cols].copy(), "work_date")
         st.dataframe(temp, use_container_width=True, hide_index=True)
 
 st.divider()
 
-
-# -------------------------
-# Payments To Chase
-# -------------------------
 st.markdown("### Payments To Chase")
 
 if "work_date" in df.columns:
@@ -507,10 +412,6 @@ else:
 
 st.divider()
 
-
-# -------------------------
-# Pagination controls
-# -------------------------
 p1, p2, p3 = st.columns(3)
 p1.metric("Current Page", current_page_value)
 p2.metric("Total Pages", total_pages)
@@ -518,20 +419,15 @@ p3.metric("Total Matching Jobs", total_rows)
 
 st.divider()
 
-
-# -------------------------
-# Full filtered editable table
-# -------------------------
 st.markdown("### Full Filtered Jobs Table")
-st.caption("This table is editable. Editing is still DB-direct for now.")
+st.caption("This table is editable. Saving now goes through the API.")
 
-if df.empty:
-    st.warning("No jobs match the selected filters.")
-else:
-    editable_jobs_table(
-        cfg=cfg,
-        DB=DB,
-        df_db=df,
-        key=f"job_status_dashboard_editor_page_{current_page_value}",
-        allow_type_edit=True,
-    )
+editable_jobs_table(
+    cfg=cfg,
+    DB=DB,
+    df_db=df,
+    key=f"job_status_dashboard_editor_page_{current_page_value}",
+    allow_type_edit=True,
+    api_url=API_URL,
+    api_key=API_KEY,
+)
