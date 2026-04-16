@@ -87,7 +87,7 @@ def load_jobs_df() -> pd.DataFrame:
     res = requests.get(
         f"{API_URL}/jobs",
         headers={"x-api-key": API_KEY},
-        params={"page": 1, "page_size": 500},
+        params={"page": 1, "page_size": 200},
         timeout=20,
     )
     res.raise_for_status()
