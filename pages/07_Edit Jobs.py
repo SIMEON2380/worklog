@@ -46,9 +46,26 @@ def parse_wait_range_to_hours(s: str) -> float:
         b = to_minutes(end)
         if b <= a:
             return 0.0
-        return (b - a) / 60.0
+        return round((b - a) / 60.0, 2)
     except Exception:
         return 0.0
+
+
+def clean_text(value):
+    if value is None:
+        return None
+    value = str(value).strip()
+    return value if value else None
+
+
+def api_error_message(response):
+    try:
+        payload = response.json()
+        if isinstance(payload, dict):
+            return payload.get("detail") or payload.get("message") or str(payload)
+        return str(payload)
+    except Exception:
+        return response.text
 
 
 if "edit_job_search" not in st.session_state:
@@ -70,13 +87,19 @@ def load_jobs_df() -> pd.DataFrame:
     res = requests.get(
         f"{API_URL}/jobs",
         headers={"x-api-key": API_KEY},
-        timeout=15,
+        params={"page": 1, "page_size": 500},
+        timeout=20,
     )
     res.raise_for_status()
-    data = res.json()
-    if not isinstance(data, list):
-        return pd.DataFrame()
-    return pd.DataFrame(data)
+    payload = res.json()
+
+    if isinstance(payload, dict) and "data" in payload:
+        return pd.DataFrame(payload.get("data", []))
+
+    if isinstance(payload, list):
+        return pd.DataFrame(payload)
+
+    return pd.DataFrame()
 
 
 try:
@@ -113,11 +136,14 @@ filtered = df.copy()
 
 if job_search.strip():
     s = job_search.strip().lower()
-    mask = False
+    mask = pd.Series(False, index=filtered.index)
+
     if "job_id" in filtered.columns:
         mask = mask | filtered["job_id"].astype(str).str.lower().str.contains(s, na=False)
+
     if "vehicle_reg" in filtered.columns:
         mask = mask | filtered["vehicle_reg"].astype(str).str.lower().str.contains(s, na=False)
+
     filtered = filtered[mask]
 
 if filtered.empty:
@@ -154,7 +180,6 @@ if choice is None:
     st.stop()
 
 job = rows[choice]
-job_id_for_api = str(job.get("job_id") or "")
 row_id = int(job["id"])
 
 st.caption(f"Selected Row ID: {row_id}")
@@ -222,7 +247,7 @@ with st.form("edit_job_form"):
     )
 
     calc_waiting_hours = float(parse_wait_range_to_hours(waiting_time))
-    calc_waiting_amount = float(calc_waiting_hours) * float(getattr(cfg, "WAITING_RATE", 0.0))
+    calc_waiting_amount = round(float(calc_waiting_hours) * float(getattr(cfg, "WAITING_RATE", 0.0)), 2)
 
     col14.number_input(
         "Waiting Hours (auto)",
@@ -305,19 +330,19 @@ with st.form("edit_job_form"):
             diffs[db_col] = new_val
 
         set_if_changed("work_date", work_date.isoformat() if work_date else None)
-        set_if_changed("job_id", job_number.strip() if job_number else None)
+        set_if_changed("job_id", clean_text(job_number))
         set_if_changed("category", job_type)
-        set_if_changed("vehicle_description", vehicle_description.strip() if vehicle_description else None)
-        set_if_changed("vehicle_reg", vehicle_reg.strip().upper() if vehicle_reg else None)
+        set_if_changed("vehicle_description", clean_text(vehicle_description))
+        set_if_changed("vehicle_reg", clean_text(vehicle_reg).upper() if clean_text(vehicle_reg) else None)
         set_if_changed("job_outcome", job_outcome)
-        set_if_changed("collection_from", collection_from.strip() if collection_from else None)
-        set_if_changed("delivery_to", delivery_to.strip() if delivery_to else None)
+        set_if_changed("collection_from", clean_text(collection_from))
+        set_if_changed("delivery_to", clean_text(delivery_to))
 
         set_if_changed("amount", float(job_amount))
         set_if_changed("job_expenses", job_expenses)
         set_if_changed("expenses_amount", float(expenses_amount))
 
-        set_if_changed("waiting_time", waiting_time.strip() if waiting_time else None)
+        set_if_changed("waiting_time", clean_text(waiting_time))
         set_if_changed("waiting_hours", float(calc_waiting_hours))
         set_if_changed("waiting_amount", float(calc_waiting_amount))
         set_if_changed("add_pay", float(add_pay))
@@ -331,21 +356,19 @@ with st.form("edit_job_form"):
             else:
                 set_if_changed("paid_date", None)
 
-        set_if_changed("auth_code", auth_code.strip() if auth_code else None)
-        set_if_changed("comments", comments.strip() if comments else None)
+        set_if_changed("auth_code", clean_text(auth_code))
+        set_if_changed("comments", clean_text(comments))
 
         if STATUS_COL:
             set_if_changed("job_status", job_status)
 
         if diffs:
             try:
-                payload = {"job_id": job_number.strip() if job_number else job_id_for_api, **diffs}
-
                 response = requests.put(
-                    f"{API_URL}/jobs/{job_id_for_api}",
-                    json=payload,
+                    f"{API_URL}/jobs/row/{row_id}",
+                    json=diffs,
                     headers={"x-api-key": API_KEY},
-                    timeout=15,
+                    timeout=20,
                 )
 
                 if response.status_code == 200:
@@ -354,8 +377,12 @@ with st.form("edit_job_form"):
                     st.rerun()
                 else:
                     st.error(f"API update failed: {response.status_code}")
-                    st.write(response.text)
+                    st.write(api_error_message(response))
 
+            except requests.exceptions.ConnectionError:
+                st.error(f"Could not connect to API at {API_URL}")
+            except requests.exceptions.Timeout:
+                st.error("API request timed out.")
             except Exception as e:
                 st.error(f"Save failed: {e}")
         else:
@@ -374,17 +401,22 @@ if st.button("Delete selected job"):
     else:
         try:
             response = requests.delete(
-                f"{API_URL}/jobs/{job_id_for_api}",
+                f"{API_URL}/jobs/row/{row_id}",
                 headers={"x-api-key": API_KEY},
-                timeout=15,
+                timeout=20,
             )
 
             if response.status_code == 200:
+                st.session_state.clear_edit_form_after_save = True
                 st.success(f"Job row #{row_id} deleted successfully via API.")
                 st.rerun()
             else:
                 st.error(f"API delete failed: {response.status_code}")
-                st.write(response.text)
+                st.write(api_error_message(response))
 
+        except requests.exceptions.ConnectionError:
+            st.error(f"Could not connect to API at {API_URL}")
+        except requests.exceptions.Timeout:
+            st.error("API request timed out.")
         except Exception as e:
             st.error(f"Delete failed: {e}")
