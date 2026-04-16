@@ -45,9 +45,26 @@ def parse_wait_range_to_hours(s: str) -> float:
         b = to_minutes(end)
         if b <= a:
             return 0.0
-        return (b - a) / 60.0
+        return round((b - a) / 60.0, 2)
     except Exception:
         return 0.0
+
+
+def clean_text(value):
+    if value is None:
+        return None
+    value = str(value).strip()
+    return value if value else None
+
+
+def api_error_message(response):
+    try:
+        payload = response.json()
+        if isinstance(payload, dict):
+            return payload.get("detail") or payload.get("message") or str(payload)
+        return str(payload)
+    except Exception:
+        return response.text
 
 
 col1, col2, col3 = st.columns(3)
@@ -102,7 +119,7 @@ col13, col14, col15 = st.columns(3)
 waiting_time = col13.text_input("Waiting Time (e.g. 10-11 or 09:00-11:30)")
 
 calc_waiting_hours = float(parse_wait_range_to_hours(waiting_time))
-calc_waiting_amount = float(calc_waiting_hours) * float(getattr(cfg, "WAITING_RATE", 0.0))
+calc_waiting_amount = round(float(calc_waiting_hours) * float(getattr(cfg, "WAITING_RATE", 0.0)), 2)
 
 col14.number_input(
     "Waiting Hours (auto)",
@@ -128,15 +145,18 @@ comments = col18.text_input("Comments")
 save_clicked = st.button("Save Job", type="primary")
 
 if save_clicked:
-    clean_job_number = job_number.strip() if job_number else ""
     clean_work_date = work_date.isoformat() if work_date else None
-    clean_vehicle_description = vehicle_description.strip() if vehicle_description else None
-    clean_vehicle_reg = vehicle_reg.strip().upper() if vehicle_reg else None
-    clean_collection_from = collection_from.strip() if collection_from else None
-    clean_delivery_to = delivery_to.strip() if delivery_to else None
-    clean_auth_code = auth_code.strip() if auth_code else None
-    clean_waiting_time = waiting_time.strip() if waiting_time else None
-    clean_comments = comments.strip() if comments else None
+    clean_job_number = clean_text(job_number)
+    clean_vehicle_description = clean_text(vehicle_description)
+    clean_vehicle_reg = clean_text(vehicle_reg)
+    clean_collection_from = clean_text(collection_from)
+    clean_delivery_to = clean_text(delivery_to)
+    clean_auth_code = clean_text(auth_code)
+    clean_waiting_time = clean_text(waiting_time)
+    clean_comments = clean_text(comments)
+
+    if clean_vehicle_reg:
+        clean_vehicle_reg = clean_vehicle_reg.upper()
 
     missing_fields = []
 
@@ -155,22 +175,22 @@ if save_clicked:
         payload = {
             "work_date": clean_work_date,
             "job_id": clean_job_number,
-            "category": job_type,
-            "vehicle_description": clean_vehicle_description,
-            "vehicle_reg": clean_vehicle_reg,
-            "collection_from": clean_collection_from,
-            "delivery_to": clean_delivery_to,
             "amount": float(job_amount),
-            "job_expenses": job_expenses,
-            "expenses_amount": float(expenses_amount) if expenses_amount is not None else 0.0,
-            "auth_code": clean_auth_code,
-            "job_outcome": job_outcome,
+            "category": job_type,
             "job_status": job_status,
             "waiting_time": clean_waiting_time,
             "waiting_hours": float(calc_waiting_hours),
             "waiting_amount": float(calc_waiting_amount),
-            "add_pay": float(add_pay),
+            "vehicle_description": clean_vehicle_description,
+            "vehicle_reg": clean_vehicle_reg,
+            "collection_from": clean_collection_from,
+            "delivery_to": clean_delivery_to,
+            "job_expenses": job_expenses,
+            "expenses_amount": float(expenses_amount) if expenses_amount is not None else 0.0,
+            "auth_code": clean_auth_code,
             "comments": clean_comments,
+            "add_pay": float(add_pay),
+            "job_outcome": job_outcome,
         }
 
         try:
@@ -184,9 +204,17 @@ if save_clicked:
             if response.status_code == 201:
                 st.success(f"Job {clean_job_number} saved via API ✅")
                 st.rerun()
+            elif response.status_code == 409:
+                st.error(f"Job {clean_job_number} already exists.")
+            elif response.status_code == 401:
+                st.error("API key rejected. Check WORKLOG_API_KEY.")
             else:
                 st.error(f"API failed: {response.status_code}")
-                st.write(response.text)
+                st.write(api_error_message(response))
 
+        except requests.exceptions.ConnectionError:
+            st.error(f"Could not connect to API at {API_URL}")
+        except requests.exceptions.Timeout:
+            st.error("API request timed out.")
         except Exception as e:
             st.error(f"Save failed: {e}")
