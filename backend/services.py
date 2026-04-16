@@ -10,8 +10,33 @@ def list_jobs(
     conn = get_connection()
     cur = conn.cursor()
 
-    # ✅ FIXED TABLE NAME
-    query = "SELECT * FROM entries"
+    # ✅ NORMALIZED SCHEMA (entries → jobs-style output)
+    query = """
+        SELECT
+            id,
+            work_date,
+            job_number AS job_id,
+            job_type AS category,
+            job_status,
+            job_amount AS amount,
+            NULL AS waiting_time,
+            0 AS waiting_hours,
+            0 AS waiting_amount,
+            vehicle_description,
+            vehicle_reg,
+            from_loc AS collection_from,
+            to_loc AS delivery_to,
+            expenses AS job_expenses,
+            expense_amount AS expenses_amount,
+            auth_code,
+            comments,
+            0 AS add_pay,
+            NULL AS paid_date,
+            NULL AS job_outcome,
+            created_at,
+            updated_at
+        FROM entries
+    """
     params = []
 
     # Optional filter by date
@@ -21,7 +46,7 @@ def list_jobs(
 
     query += " ORDER BY work_date DESC, id DESC"
 
-    # Optional limit (only if provided)
+    # Optional limit
     if limit:
         query += " LIMIT ?"
         params.append(limit)
