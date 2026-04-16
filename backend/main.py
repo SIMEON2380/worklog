@@ -1,7 +1,7 @@
 import os
 from typing import Optional
 
-from fastapi import FastAPI, Header, HTTPException, status
+from fastapi import FastAPI, Header, HTTPException, Query, status
 
 from backend.schemas import JobCreate, JobUpdate
 from backend.services import (
@@ -24,13 +24,13 @@ def verify_api_key(x_api_key: str | None = Header(default=None)):
     if not API_KEY:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="API key is not configured on the server"
+            detail="API key is not configured on the server",
         )
 
     if x_api_key != API_KEY:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid or missing API key"
+            detail="Invalid or missing API key",
         )
 
 
@@ -48,22 +48,32 @@ def health():
 def get_jobs(
     x_api_key: str | None = Header(default=None),
     job_status: Optional[str] = None,
+    job_outcome: Optional[str] = None,
+    category: Optional[str] = None,
+    search: Optional[str] = None,
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=50, ge=1, le=200),
 ):
     verify_api_key(x_api_key)
     try:
         return list_jobs(
             job_status=job_status,
+            job_outcome=job_outcome,
+            category=category,
+            search=search,
             start_date=start_date,
             end_date=end_date,
+            page=page,
+            page_size=page_size,
         )
     except HTTPException:
         raise
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=str(e)
+            detail=str(e),
         )
 
 
@@ -77,7 +87,7 @@ def get_job(job_id: str, x_api_key: str | None = Header(default=None)):
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=str(e)
+            detail=str(e),
         )
 
 
@@ -91,7 +101,7 @@ def get_job_row(row_id: int, x_api_key: str | None = Header(default=None)):
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=str(e)
+            detail=str(e),
         )
 
 
@@ -105,7 +115,7 @@ def create_job(job: JobCreate, x_api_key: str | None = Header(default=None)):
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=str(e)
+            detail=str(e),
         )
 
 
@@ -119,7 +129,7 @@ def update_job(job_id: str, job: JobUpdate, x_api_key: str | None = Header(defau
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=str(e)
+            detail=str(e),
         )
 
 
@@ -133,7 +143,7 @@ def update_job_row(row_id: int, job: JobUpdate, x_api_key: str | None = Header(d
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=str(e)
+            detail=str(e),
         )
 
 
@@ -147,7 +157,7 @@ def delete_job(job_id: str, x_api_key: str | None = Header(default=None)):
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=str(e)
+            detail=str(e),
         )
 
 
@@ -161,5 +171,5 @@ def delete_job_row(row_id: int, x_api_key: str | None = Header(default=None)):
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=str(e)
+            detail=str(e),
         )

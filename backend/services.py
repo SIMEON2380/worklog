@@ -52,11 +52,72 @@ def parse_wait_range_to_hours(s: str) -> float:
     return round((end_m - start_m) / 60, 2)
 
 
-def list_jobs(job_status=None, start_date=None, end_date=None):
+def list_jobs(
+    job_status=None,
+    job_outcome=None,
+    category=None,
+    search=None,
+    start_date=None,
+    end_date=None,
+    page=1,
+    page_size=50,
+):
     conn = get_connection()
     cur = conn.cursor()
 
-    query = """
+    base_query = """
+        FROM work_logs
+        WHERE 1=1
+    """
+
+    params = []
+
+    if job_status:
+        base_query += " AND COALESCE(job_status, '') = ?"
+        params.append(job_status)
+
+    if job_outcome:
+        base_query += " AND COALESCE(job_outcome, '') = ?"
+        params.append(job_outcome)
+
+    if category:
+        base_query += " AND COALESCE(category, '') = ?"
+        params.append(category)
+
+    if start_date:
+        base_query += " AND work_date >= ?"
+        params.append(start_date)
+
+    if end_date:
+        base_query += " AND work_date <= ?"
+        params.append(end_date)
+
+    if search:
+        search_value = f"%{str(search).strip()}%"
+        base_query += """
+            AND (
+                COALESCE(job_id, '') LIKE ?
+                OR COALESCE(vehicle_reg, '') LIKE ?
+                OR COALESCE(vehicle_description, '') LIKE ?
+                OR COALESCE(collection_from, '') LIKE ?
+                OR COALESCE(delivery_to, '') LIKE ?
+            )
+        """
+        params.extend([
+            search_value,
+            search_value,
+            search_value,
+            search_value,
+            search_value,
+        ])
+
+    count_query = f"SELECT COUNT(*) {base_query}"
+    cur.execute(count_query, params)
+    total = cur.fetchone()[0]
+
+    offset = (page - 1) * page_size
+
+    data_query = f"""
         SELECT
             id,
             work_date,
@@ -78,32 +139,26 @@ def list_jobs(job_status=None, start_date=None, end_date=None):
             add_pay,
             paid_date,
             job_outcome
-        FROM work_logs
-        WHERE 1=1
+        {base_query}
+        ORDER BY work_date DESC, id DESC
+        LIMIT ? OFFSET ?
     """
 
-    params = []
-
-    if job_status:
-        query += " AND job_status = ?"
-        params.append(job_status)
-
-    if start_date:
-        query += " AND work_date >= ?"
-        params.append(start_date)
-
-    if end_date:
-        query += " AND work_date <= ?"
-        params.append(end_date)
-
-    query += " ORDER BY work_date DESC, id DESC"
-
-    cur.execute(query, params)
-
+    data_params = params + [page_size, offset]
+    cur.execute(data_query, data_params)
     rows = cur.fetchall()
     conn.close()
 
-    return [dict(row) for row in rows]
+    data = [dict(row) for row in rows]
+    total_pages = (total + page_size - 1) // page_size if page_size > 0 else 1
+
+    return {
+        "data": data,
+        "page": page,
+        "page_size": page_size,
+        "total": total,
+        "total_pages": total_pages,
+    }
 
 
 def get_job_by_id(job_id: str):
@@ -480,7 +535,27 @@ def update_job_row_record(row_id: int, job):
     cur = conn.cursor()
 
     cur.execute("""
-        SELECT 1
+        SELECT
+            id,
+            work_date,
+            job_id,
+            amount,
+            category,
+            job_status,
+            waiting_time,
+            waiting_hours,
+            waiting_amount,
+            vehicle_description,
+            vehicle_reg,
+            collection_from,
+            delivery_to,
+            job_expenses,
+            expenses_amount,
+            auth_code,
+            comments,
+            add_pay,
+            paid_date,
+            job_outcome
         FROM work_logs
         WHERE id = ?
         LIMIT 1
@@ -494,7 +569,11 @@ def update_job_row_record(row_id: int, job):
             detail="row not found"
         )
 
-    waiting_time = normalise_text(job.waiting_time)
+    existing = dict(existing)
+    updates = job.model_dump(exclude_unset=True)
+    merged = {**existing, **updates}
+
+    waiting_time = normalise_text(merged.get("waiting_time"))
     waiting_hours = parse_wait_range_to_hours(waiting_time or "")
     waiting_amount = round(waiting_hours * WAITING_RATE, 2)
 
@@ -522,25 +601,25 @@ def update_job_row_record(row_id: int, job):
             job_outcome = ?
         WHERE id = ?
     """, (
-        str(job.work_date),
-        normalise_text(job.job_id),
-        job.amount if job.amount is not None else 0.0,
-        normalise_text(job.category),
-        normalise_text(job.job_status) or "Start",
+        str(merged.get("work_date")),
+        normalise_text(merged.get("job_id")),
+        merged.get("amount") if merged.get("amount") is not None else 0.0,
+        normalise_text(merged.get("category")),
+        normalise_text(merged.get("job_status")) or "Start",
         waiting_time,
         waiting_hours,
         waiting_amount,
-        normalise_vehicle_description(job.vehicle_description),
-        normalise_text(job.vehicle_reg),
-        normalise_text(job.collection_from),
-        normalise_text(job.delivery_to),
-        normalise_job_expenses(job.job_expenses),
-        job.expenses_amount if job.expenses_amount is not None else 0.0,
-        normalise_text(job.auth_code),
-        normalise_text(job.comments),
-        job.add_pay if job.add_pay is not None else 0.0,
-        str(job.paid_date) if job.paid_date else None,
-        normalise_text(job.job_outcome),
+        normalise_vehicle_description(merged.get("vehicle_description")),
+        normalise_text(merged.get("vehicle_reg")),
+        normalise_text(merged.get("collection_from")),
+        normalise_text(merged.get("delivery_to")),
+        normalise_job_expenses(merged.get("job_expenses")),
+        merged.get("expenses_amount") if merged.get("expenses_amount") is not None else 0.0,
+        normalise_text(merged.get("auth_code")),
+        normalise_text(merged.get("comments")),
+        merged.get("add_pay") if merged.get("add_pay") is not None else 0.0,
+        str(merged.get("paid_date")) if merged.get("paid_date") else None,
+        normalise_text(merged.get("job_outcome")),
         row_id,
     ))
 
