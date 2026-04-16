@@ -7,9 +7,9 @@ import streamlit as st
 from worklog.auth import ensure_default_user
 from worklog.config import Config
 from worklog.db import make_db
-from worklog.ui import require_login, check_vehicle_compliance
+from worklog.ui import require_login
 
-API_URL = os.getenv("WORKLOG_API_URL", "http://127.0.0.1:8000")
+API_URL = os.getenv("WORKLOG_API_URL", "http://127.0.0.1:8000").rstrip("/")
 API_KEY = os.getenv("WORKLOG_API_KEY", "supersecret123")
 
 cfg = Config()
@@ -82,29 +82,6 @@ job_outcome = col6.selectbox(
     index=0,
 )
 
-vehicle_check = check_vehicle_compliance(vehicle_reg)
-
-if vehicle_reg and str(vehicle_reg).strip():
-    mot_expiry = vehicle_check.get("mot_expiry")
-    mot_expiry_text = mot_expiry.isoformat() if mot_expiry else "Unknown"
-
-    col5.caption(
-        f"Road Tax: {vehicle_check.get('tax_status', 'Unknown')} | "
-        f"MOT Expiry: {mot_expiry_text}"
-    )
-
-    status = vehicle_check.get("status", "Unknown")
-    reason = vehicle_check.get("reason", "")
-
-    if status == "Compliant":
-        col5.success("Compliant")
-    elif status == "Warning":
-        col5.warning(f"Warning - {reason}")
-    elif status == "Non-compliant":
-        col5.error(f"Non-compliant - {reason}")
-    else:
-        col5.info(f"{status}" + (f" - {reason}" if reason else ""))
-
 col7, col8, col9 = st.columns(3)
 collection_from = col7.text_input("Collection From")
 delivery_to = col8.text_input("Delivery To")
@@ -119,7 +96,10 @@ col13, col14, col15 = st.columns(3)
 waiting_time = col13.text_input("Waiting Time (e.g. 10-11 or 09:00-11:30)")
 
 calc_waiting_hours = float(parse_wait_range_to_hours(waiting_time))
-calc_waiting_amount = round(float(calc_waiting_hours) * float(getattr(cfg, "WAITING_RATE", 0.0)), 2)
+calc_waiting_amount = round(
+    float(calc_waiting_hours) * float(getattr(cfg, "WAITING_RATE", 0.0)),
+    2,
+)
 
 col14.number_input(
     "Waiting Hours (auto)",
