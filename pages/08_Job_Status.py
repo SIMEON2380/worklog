@@ -1,7 +1,9 @@
+import math
 import os
-import streamlit as st
+
 import pandas as pd
 import requests
+import streamlit as st
 
 from worklog.config import Config
 from worklog.db import make_db
@@ -77,25 +79,121 @@ def compute_pending_money(frame: pd.DataFrame) -> float:
     return round(total, 2)
 
 
+def format_date_column(frame: pd.DataFrame, col_name: str = "work_date") -> pd.DataFrame:
+    temp = frame.copy()
+    if col_name in temp.columns:
+        temp[col_name] = pd.to_datetime(temp[col_name], errors="coerce").dt.strftime("%Y-%m-%d")
+    return temp
+
+
+def fetch_jobs(params: dict) -> tuple[pd.DataFrame, dict]:
+    api_endpoint = f"{API_URL}/jobs"
+    headers = {"x-api-key": API_KEY}
+
+    response = requests.get(
+        api_endpoint,
+        headers=headers,
+        params=params,
+        timeout=20,
+    )
+
+    if response.status_code != 200:
+        raise RuntimeError(f"API failed: {response.status_code} | {response.text}")
+
+    payload = response.json()
+
+    if isinstance(payload, dict) and "data" in payload:
+        records = payload.get("data", [])
+        meta = {
+            "page": int(payload.get("page", 1)),
+            "page_size": int(payload.get("page_size", len(records) if records else 50)),
+            "total": int(payload.get("total", len(records))),
+            "total_pages": int(payload.get("total_pages", 1)),
+        }
+    elif isinstance(payload, list):
+        records = payload
+        meta = {
+            "page": 1,
+            "page_size": len(records) if records else 50,
+            "total": len(records),
+            "total_pages": 1,
+        }
+    else:
+        raise RuntimeError(f"Unexpected API response format: {payload}")
+
+    df = pd.DataFrame(records).copy()
+    return df, meta
+
+
+# -------------------------
+# Filter options
+# -------------------------
+status_options = ["All", "Paid", "Pending", "Start", "Completed", "Aborted", "Withdraw"]
+outcome_options = ["All", "Completed", "Aborted", "Withdraw", "Fail"]
+
+job_type_options = getattr(
+    cfg,
+    "JOB_TYPE_OPTIONS",
+    ["STRD Trade Plate", "Inspect and Collect", "Inspect and Collect 2"],
+)
+type_options = ["All"] + list(job_type_options)
+
+page_size_options = [25, 50, 100, 200]
+
+
 # -------------------------
 # API filter controls
 # -------------------------
-api_f1, api_f2, api_f3 = st.columns(3)
+f1, f2, f3, f4 = st.columns(4)
 
-api_status_options = ["All", "Paid", "Pending", "Start", "Completed", "Aborted", "Withdraw"]
-selected_api_status = api_f1.selectbox(
-    "Payment Status (API Filter)",
-    options=api_status_options,
+selected_api_status = f1.selectbox(
+    "Payment Status",
+    options=status_options,
     index=0,
 )
 
-selected_start_date = api_f2.date_input("Start Date", value=None)
-selected_end_date = api_f3.date_input("End Date", value=None)
+selected_outcome = f2.selectbox(
+    "Job Outcome",
+    options=outcome_options,
+    index=0,
+)
 
-params = {}
+selected_type = f3.selectbox(
+    "Job Type",
+    options=type_options,
+    index=0,
+)
+
+search_text = f4.text_input("Search Job Number / Vehicle Reg / Vehicle")
+
+d1, d2, d3 = st.columns(3)
+
+selected_start_date = d1.date_input("Start Date", value=None)
+selected_end_date = d2.date_input("End Date", value=None)
+page_size = d3.selectbox("Rows Per Page", options=page_size_options, index=1)
+
+current_page = st.number_input("Page", min_value=1, value=1, step=1)
+
+
+# -------------------------
+# Build API params
+# -------------------------
+params = {
+    "page": int(current_page),
+    "page_size": int(page_size),
+}
 
 if selected_api_status != "All":
     params["job_status"] = selected_api_status
+
+if selected_outcome != "All":
+    params["job_outcome"] = selected_outcome
+
+if selected_type != "All":
+    params["category"] = selected_type
+
+if search_text.strip():
+    params["search"] = search_text.strip()
 
 if selected_start_date is not None:
     params["start_date"] = pd.to_datetime(selected_start_date).strftime("%Y-%m-%d")
@@ -108,40 +206,13 @@ if selected_end_date is not None:
 # Load jobs from API
 # -------------------------
 try:
-    api_endpoint = f"{API_URL}/jobs"
-    headers = {"x-api-key": API_KEY}
-
-    response = requests.get(
-        api_endpoint,
-        headers=headers,
-        params=params,
-        timeout=15,
-    )
-
-    if response.status_code != 200:
-        st.error(f"API failed: {response.status_code}")
-        st.write(response.text)
-        st.stop()
-
-    payload = response.json()
-
-    if isinstance(payload, dict) and "data" in payload:
-        records = payload["data"]
-    elif isinstance(payload, list):
-        records = payload
-    else:
-        st.error("Unexpected API response format.")
-        st.write(payload)
-        st.stop()
-
-    df = pd.DataFrame(records).copy()
-
+    df, meta = fetch_jobs(params)
 except Exception as e:
     st.error(f"Failed to load jobs from API: {e}")
     st.stop()
 
 if df.empty:
-    st.info("No jobs found.")
+    st.info("No jobs found for the selected filters.")
     st.stop()
 
 
@@ -176,6 +247,11 @@ if "job_id" in df.columns:
 else:
     df["job_id"] = ""
 
+if "vehicle_description" in df.columns:
+    df["vehicle_description"] = safe_text(df["vehicle_description"])
+else:
+    df["vehicle_description"] = ""
+
 if "work_date" in df.columns:
     df["work_date"] = pd.to_datetime(df["work_date"], errors="coerce")
 
@@ -188,6 +264,25 @@ df["add_pay"] = safe_num(df["add_pay"]) if "add_pay" in df.columns else 0.0
 df["expenses_amount"] = safe_num(df["expenses_amount"]) if "expenses_amount" in df.columns else 0.0
 
 df["gross_value"] = df["amount"] + df["waiting_amount"] + df["add_pay"] - df["expenses_amount"]
+
+
+# -------------------------
+# API result summary
+# -------------------------
+total_rows = int(meta.get("total", len(df)))
+current_page_value = int(meta.get("page", 1))
+page_size_value = int(meta.get("page_size", len(df)))
+total_pages = int(meta.get("total_pages", 1))
+
+start_row = ((current_page_value - 1) * page_size_value) + 1 if total_rows > 0 else 0
+end_row = min(current_page_value * page_size_value, total_rows)
+
+st.caption(
+    f"Showing {start_row}-{end_row} of {total_rows} jobs "
+    f"(page {current_page_value} of {total_pages})"
+)
+
+st.divider()
 
 
 # -------------------------
@@ -210,47 +305,12 @@ pending_money = compute_pending_money(pending_df)
 # KPI cards
 # -------------------------
 k1, k2, k3, k4, k5, k6 = st.columns(6)
-k1.metric("Total Jobs", int(len(df)))
+k1.metric("Page Jobs", int(len(df)))
 k2.metric("Paid", int(len(paid_df)))
 k3.metric("Pending", int(len(pending_df)))
 k4.metric("Aborted", int(len(aborted_df)))
 k5.metric("Withdraw", int(len(withdraw_df)))
 k6.metric("Pending £", f"£{pending_money:,.2f}")
-
-st.divider()
-
-
-# -------------------------
-# Local filters
-# -------------------------
-f1, f2, f3 = st.columns(3)
-
-outcome_options = ["All"] + sorted(
-    [x for x in df["job_outcome"].dropna().unique().tolist() if str(x).strip() != ""]
-)
-type_options = ["All"] + sorted(
-    [x for x in df["category"].dropna().unique().tolist() if str(x).strip() != ""]
-)
-
-selected_outcome = f1.selectbox("Job Outcome", options=outcome_options, index=0)
-selected_type = f2.selectbox("Job Type", options=type_options, index=0)
-search_text = f3.text_input("Search Job Number / Vehicle Reg")
-
-sub = df.copy()
-
-if selected_outcome != "All":
-    sub = sub[sub["job_outcome"] == selected_outcome]
-
-if selected_type != "All":
-    sub = sub[sub["category"] == selected_type]
-
-if search_text.strip():
-    s = search_text.strip().lower()
-    mask = (
-        sub["job_id"].str.lower().str.contains(s, na=False)
-        | sub["vehicle_reg"].str.lower().str.contains(s, na=False)
-    )
-    sub = sub[mask]
 
 st.divider()
 
@@ -314,8 +374,7 @@ with a1:
             if c in pending_df.columns
         ]
         temp = pending_df[show_cols].copy()
-        if "work_date" in temp.columns:
-            temp["work_date"] = pd.to_datetime(temp["work_date"], errors="coerce").dt.strftime("%Y-%m-%d")
+        temp = format_date_column(temp, "work_date")
         if "gross_value" in temp.columns:
             temp["gross_value"] = pd.to_numeric(temp["gross_value"], errors="coerce").fillna(0).round(2)
         st.dataframe(temp, use_container_width=True, hide_index=True)
@@ -338,8 +397,7 @@ with a2:
             if c in aborted_paid_df.columns
         ]
         temp = aborted_paid_df[show_cols].copy()
-        if "work_date" in temp.columns:
-            temp["work_date"] = pd.to_datetime(temp["work_date"], errors="coerce").dt.strftime("%Y-%m-%d")
+        temp = format_date_column(temp, "work_date")
         if "gross_value" in temp.columns:
             temp["gross_value"] = pd.to_numeric(temp["gross_value"], errors="coerce").fillna(0).round(2)
         st.dataframe(temp, use_container_width=True, hide_index=True)
@@ -353,8 +411,7 @@ with b1:
     else:
         show_cols = [c for c in ["work_date", "job_id", "vehicle_reg", "category", "job_outcome", status_col] if c in withdraw_df.columns]
         temp = withdraw_df[show_cols].copy()
-        if "work_date" in temp.columns:
-            temp["work_date"] = pd.to_datetime(temp["work_date"], errors="coerce").dt.strftime("%Y-%m-%d")
+        temp = format_date_column(temp, "work_date")
         st.dataframe(temp, use_container_width=True, hide_index=True)
 
 with b2:
@@ -364,8 +421,7 @@ with b2:
     else:
         show_cols = [c for c in ["work_date", "job_id", "vehicle_reg", "category", "job_outcome", status_col] if c in fail_df.columns]
         temp = fail_df[show_cols].copy()
-        if "work_date" in temp.columns:
-            temp["work_date"] = pd.to_datetime(temp["work_date"], errors="coerce").dt.strftime("%Y-%m-%d")
+        temp = format_date_column(temp, "work_date")
         st.dataframe(temp, use_container_width=True, hide_index=True)
 
 st.divider()
@@ -415,10 +471,8 @@ if "work_date" in df.columns:
                     ]
                     if c in pending_7.columns
                 ]
-                temp7 = pending_7[show_cols].copy()
-                temp7 = temp7.sort_values("days_pending", ascending=False)
-                if "work_date" in temp7.columns:
-                    temp7["work_date"] = pd.to_datetime(temp7["work_date"], errors="coerce").dt.strftime("%Y-%m-%d")
+                temp7 = pending_7[show_cols].copy().sort_values("days_pending", ascending=False)
+                temp7 = format_date_column(temp7, "work_date")
                 if "gross_value" in temp7.columns:
                     temp7["gross_value"] = pd.to_numeric(temp7["gross_value"], errors="coerce").fillna(0).round(2)
                 st.dataframe(temp7, use_container_width=True, hide_index=True)
@@ -441,10 +495,8 @@ if "work_date" in df.columns:
                     ]
                     if c in pending_14.columns
                 ]
-                temp14 = pending_14[show_cols].copy()
-                temp14 = temp14.sort_values("days_pending", ascending=False)
-                if "work_date" in temp14.columns:
-                    temp14["work_date"] = pd.to_datetime(temp14["work_date"], errors="coerce").dt.strftime("%Y-%m-%d")
+                temp14 = pending_14[show_cols].copy().sort_values("days_pending", ascending=False)
+                temp14 = format_date_column(temp14, "work_date")
                 if "gross_value" in temp14.columns:
                     temp14["gross_value"] = pd.to_numeric(temp14["gross_value"], errors="coerce").fillna(0).round(2)
                 st.dataframe(temp14, use_container_width=True, hide_index=True)
@@ -457,18 +509,29 @@ st.divider()
 
 
 # -------------------------
+# Pagination controls
+# -------------------------
+p1, p2, p3 = st.columns(3)
+p1.metric("Current Page", current_page_value)
+p2.metric("Total Pages", total_pages)
+p3.metric("Total Matching Jobs", total_rows)
+
+st.divider()
+
+
+# -------------------------
 # Full filtered editable table
 # -------------------------
 st.markdown("### Full Filtered Jobs Table")
-st.caption("This table is editable.")
+st.caption("This table is editable. Editing is still DB-direct for now.")
 
-if sub.empty:
+if df.empty:
     st.warning("No jobs match the selected filters.")
 else:
     editable_jobs_table(
         cfg=cfg,
         DB=DB,
-        df_db=sub,
-        key="job_status_dashboard_editor",
+        df_db=df,
+        key=f"job_status_dashboard_editor_page_{current_page_value}",
         allow_type_edit=True,
     )
