@@ -9,7 +9,7 @@ from worklog.auth import ensure_default_user
 from worklog.ui import require_login, editable_jobs_table
 
 API_URL = os.getenv("WORKLOG_API_URL", "http://127.0.0.1:8000")
-API_KEY = os.getenv("WORKLOG_API_KEY", "supersecret123")
+API_KEY = "supersecret123"
 
 cfg = Config()
 DB = make_db(cfg)
@@ -21,39 +21,6 @@ ensure_default_user(cfg)
 require_login()
 
 st.subheader("Job Status Dashboard")
-
-try:
-    response = requests.get(
-        f"{API_URL}/jobs",
-        headers={"x-api-key": API_KEY},
-        timeout=15,
-    )
-
-    if response.status_code != 200:
-        st.error(f"API failed: {response.status_code}")
-        st.write(response.text)
-        st.stop()
-
-    payload = response.json()
-
-    if isinstance(payload, dict) and "data" in payload:
-        records = payload["data"]
-    elif isinstance(payload, list):
-        records = payload
-    else:
-        st.error("Unexpected API response format.")
-        st.write(payload)
-        st.stop()
-
-    df = pd.DataFrame(records).copy()
-
-except Exception as e:
-    st.error(f"Failed to load jobs from API: {e}")
-    st.stop()
-
-if df.empty:
-    st.info("No jobs found.")
-    st.stop()
 
 
 # -------------------------
@@ -95,6 +62,81 @@ def compute_pending_money(frame: pd.DataFrame) -> float:
     return round(total, 2)
 
 
+# -------------------------
+# API filter controls
+# -------------------------
+api_f1, api_f2, api_f3 = st.columns(3)
+
+api_status_options = ["All", "Paid", "Pending", "Start", "Completed", "Aborted", "Withdraw"]
+selected_api_status = api_f1.selectbox("Payment Status (API Filter)", options=api_status_options, index=0)
+
+default_start_date = None
+default_end_date = None
+
+selected_start_date = api_f2.date_input("Start Date", value=default_start_date)
+selected_end_date = api_f3.date_input("End Date", value=default_end_date)
+
+params = {}
+
+if selected_api_status != "All":
+    params["job_status"] = selected_api_status
+
+if selected_start_date:
+    params["start_date"] = pd.to_datetime(selected_start_date).strftime("%Y-%m-%d")
+
+if selected_end_date:
+    params["end_date"] = pd.to_datetime(selected_end_date).strftime("%Y-%m-%d")
+
+
+# -------------------------
+# Load jobs from API
+# -------------------------
+try:
+    api_endpoint = f"{API_URL}/jobs"
+    headers = {"x-api-key": API_KEY}
+
+    st.write("DEBUG API_URL:", API_URL)
+    st.write("DEBUG endpoint:", api_endpoint)
+    st.write("DEBUG params:", params)
+    st.write("DEBUG x-api-key:", API_KEY)
+
+    response = requests.get(
+        api_endpoint,
+        headers=headers,
+        params=params,
+        timeout=15,
+    )
+
+    st.write("DEBUG status code:", response.status_code)
+    st.write("DEBUG response text:", response.text)
+
+    if response.status_code != 200:
+        st.error(f"API failed: {response.status_code}")
+        st.write(response.text)
+        st.stop()
+
+    payload = response.json()
+
+    if isinstance(payload, dict) and "data" in payload:
+        records = payload["data"]
+    elif isinstance(payload, list):
+        records = payload
+    else:
+        st.error("Unexpected API response format.")
+        st.write(payload)
+        st.stop()
+
+    df = pd.DataFrame(records).copy()
+
+except Exception as e:
+    st.error(f"Failed to load jobs from API: {e}")
+    st.stop()
+
+if df.empty:
+    st.info("No jobs found.")
+    st.stop()
+
+
 status_col = get_status_col(df)
 
 if status_col is None:
@@ -102,7 +144,7 @@ if status_col is None:
     st.stop()
 
 df[status_col] = safe_text(df[status_col])
-df["job_outcome"] = safe_text(df["job_outcome"]) if "job_outcome" in df.columns else "Completed"
+df["job_outcome"] = safe_text(df["job_outcome"]) if "job_outcome" in df.columns else ""
 df["category"] = safe_text(df["category"]) if "category" in df.columns else ""
 df["vehicle_reg"] = safe_text(df["vehicle_reg"]) if "vehicle_reg" in df.columns else ""
 df["job_id"] = safe_text(df["job_id"]) if "job_id" in df.columns else ""
@@ -144,23 +186,18 @@ k6.metric("Pending £", f"£{pending_money:,.2f}")
 st.divider()
 
 # -------------------------
-# Filters
+# Local filters
 # -------------------------
-f1, f2, f3, f4 = st.columns(4)
+f1, f2, f3 = st.columns(3)
 
-status_options = ["All"] + sorted([x for x in df[status_col].dropna().unique().tolist() if str(x).strip() != ""])
 outcome_options = ["All"] + sorted([x for x in df["job_outcome"].dropna().unique().tolist() if str(x).strip() != ""])
 type_options = ["All"] + sorted([x for x in df["category"].dropna().unique().tolist() if str(x).strip() != ""])
 
-selected_status = f1.selectbox("Payment Status", options=status_options, index=0)
-selected_outcome = f2.selectbox("Job Outcome", options=outcome_options, index=0)
-selected_type = f3.selectbox("Job Type", options=type_options, index=0)
-search_text = f4.text_input("Search Job Number / Vehicle Reg")
+selected_outcome = f1.selectbox("Job Outcome", options=outcome_options, index=0)
+selected_type = f2.selectbox("Job Type", options=type_options, index=0)
+search_text = f3.text_input("Search Job Number / Vehicle Reg")
 
 sub = df.copy()
-
-if selected_status != "All":
-    sub = sub[sub[status_col] == selected_status]
 
 if selected_outcome != "All":
     sub = sub[sub["job_outcome"] == selected_outcome]

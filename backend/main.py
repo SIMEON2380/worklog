@@ -1,4 +1,6 @@
 import os
+from typing import Optional
+
 from fastapi import FastAPI, Header, HTTPException, status
 
 from backend.schemas import JobCreate, JobUpdate
@@ -43,10 +45,19 @@ def health():
 
 
 @app.get("/jobs")
-def get_jobs(x_api_key: str | None = Header(default=None)):
+def get_jobs(
+    x_api_key: str | None = Header(default=None),
+    job_status: Optional[str] = None,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+):
     verify_api_key(x_api_key)
     try:
-        return list_jobs()
+        return list_jobs(
+            job_status=job_status,
+            start_date=start_date,
+            end_date=end_date,
+        )
     except HTTPException:
         raise
     except Exception as e:

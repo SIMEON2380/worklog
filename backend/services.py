@@ -56,7 +56,7 @@ def list_jobs(job_status=None, start_date=None, end_date=None):
     conn = get_connection()
     cur = conn.cursor()
 
-    cur.execute("""
+    query = """
         SELECT
             id,
             work_date,
@@ -79,8 +79,26 @@ def list_jobs(job_status=None, start_date=None, end_date=None):
             paid_date,
             job_outcome
         FROM work_logs
-        ORDER BY work_date DESC, id DESC
-    """)
+        WHERE 1=1
+    """
+
+    params = []
+
+    if job_status:
+        query += " AND job_status = ?"
+        params.append(job_status)
+
+    if start_date:
+        query += " AND work_date >= ?"
+        params.append(start_date)
+
+    if end_date:
+        query += " AND work_date <= ?"
+        params.append(end_date)
+
+    query += " ORDER BY work_date DESC, id DESC"
+
+    cur.execute(query, params)
 
     rows = cur.fetchall()
     conn.close()
@@ -286,7 +304,6 @@ def update_job_record(job_id: str, job):
 
     existing = dict(existing)
     updates = job.model_dump(exclude_unset=True)
-
     merged = {**existing, **updates}
 
     waiting_time = normalise_text(merged.get("waiting_time"))
