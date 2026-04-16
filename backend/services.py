@@ -10,7 +10,8 @@ def list_jobs(
     conn = get_connection()
     cur = conn.cursor()
 
-    query = "SELECT * FROM jobs"
+    # ✅ FIXED TABLE NAME
+    query = "SELECT * FROM entries"
     params = []
 
     # Optional filter by date
@@ -25,11 +26,16 @@ def list_jobs(
         query += " LIMIT ?"
         params.append(limit)
 
-    cur.execute(query, params)
+    try:
+        cur.execute(query, params)
 
-    columns = [col[0] for col in cur.description]
-    rows = cur.fetchall()
+        columns = [col[0] for col in cur.description]
+        rows = cur.fetchall()
 
-    conn.close()
+        return [dict(zip(columns, row)) for row in rows]
 
-    return [dict(zip(columns, row)) for row in rows]
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+    finally:
+        conn.close()
