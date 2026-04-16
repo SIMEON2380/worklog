@@ -52,7 +52,7 @@ def parse_wait_range_to_hours(s: str) -> float:
     return round((end_m - start_m) / 60, 2)
 
 
-def list_jobs():
+def list_jobs(job_status=None, start_date=None, end_date=None):
     conn = get_connection()
     cur = conn.cursor()
 
@@ -380,6 +380,8 @@ def update_job_record(job_id: str, job):
         "status": "success",
         "data": dict(row)
     }
+
+
 def delete_job_record(job_id: str):
     conn = get_connection()
     cur = conn.cursor()
@@ -411,47 +413,8 @@ def delete_job_record(job_id: str):
         "status": "success",
         "job_id": job_id
     }
-def get_job_by_row_id(row_id: int):
-    conn = get_connection()
-    cur = conn.cursor()
 
-    cur.execute("""
-        SELECT
-            id,
-            work_date,
-            job_id,
-            amount,
-            category,
-            job_status,
-            waiting_time,
-            waiting_hours,
-            waiting_amount,
-            vehicle_description,
-            vehicle_reg,
-            collection_from,
-            delivery_to,
-            job_expenses,
-            expenses_amount,
-            auth_code,
-            comments,
-            add_pay,
-            paid_date,
-            job_outcome
-        FROM work_logs
-        WHERE id = ?
-        LIMIT 1
-    """, (row_id,))
 
-    row = cur.fetchone()
-    conn.close()
-
-    if row is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="row not found"
-        )
-
-    return dict(row)
 def get_job_by_row_id(row_id: int):
     conn = get_connection()
     cur = conn.cursor()
@@ -493,6 +456,8 @@ def get_job_by_row_id(row_id: int):
         )
 
     return dict(row)
+
+
 def update_job_row_record(row_id: int, job):
     conn = get_connection()
     cur = conn.cursor()
