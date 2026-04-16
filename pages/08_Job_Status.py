@@ -4,12 +4,12 @@ import pandas as pd
 import requests
 import streamlit as st
 
+from worklog.auth import ensure_default_user
 from worklog.config import Config
 from worklog.db import make_db
-from worklog.auth import ensure_default_user
 from worklog.ui import require_login, editable_jobs_table
 
-API_URL = os.getenv("WORKLOG_API_URL", "http://127.0.0.1:8000")
+API_URL = os.getenv("WORKLOG_API_URL", "http://127.0.0.1:8000").rstrip("/")
 API_KEY = os.getenv("WORKLOG_API_KEY", "supersecret123")
 
 cfg = Config()
@@ -45,7 +45,6 @@ def compute_pending_money(frame: pd.DataFrame) -> float:
         return 0.0
 
     out = frame.copy()
-
     out["amount"] = safe_num(out["amount"]) if "amount" in out.columns else 0.0
     out["waiting_amount"] = safe_num(out["waiting_amount"]) if "waiting_amount" in out.columns else 0.0
     out["add_pay"] = safe_num(out["add_pay"]) if "add_pay" in out.columns else 0.0
@@ -67,7 +66,7 @@ def format_date_column(frame: pd.DataFrame, col_name: str = "work_date") -> pd.D
     return temp
 
 
-def fetch_jobs(params: dict) -> tuple[pd.DataFrame, dict]:
+def fetch_jobs(params=None) -> tuple[pd.DataFrame, dict]:
     response = requests.get(
         f"{API_URL}/jobs",
         headers={"x-api-key": API_KEY},
@@ -320,7 +319,10 @@ with b1:
     if withdraw_df.empty:
         st.info("No withdraw jobs.")
     else:
-        show_cols = [c for c in ["work_date", "job_id", "vehicle_reg", "category", "job_outcome", status_col] if c in withdraw_df.columns]
+        show_cols = [
+            c for c in ["work_date", "job_id", "vehicle_reg", "category", "job_outcome", status_col]
+            if c in withdraw_df.columns
+        ]
         temp = format_date_column(withdraw_df[show_cols].copy(), "work_date")
         st.dataframe(temp, use_container_width=True, hide_index=True)
 
@@ -329,7 +331,10 @@ with b2:
     if fail_df.empty:
         st.info("No failed jobs.")
     else:
-        show_cols = [c for c in ["work_date", "job_id", "vehicle_reg", "category", "job_outcome", status_col] if c in fail_df.columns]
+        show_cols = [
+            c for c in ["work_date", "job_id", "vehicle_reg", "category", "job_outcome", status_col]
+            if c in fail_df.columns
+        ]
         temp = format_date_column(fail_df[show_cols].copy(), "work_date")
         st.dataframe(temp, use_container_width=True, hide_index=True)
 

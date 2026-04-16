@@ -5,12 +5,12 @@ import pandas as pd
 import requests
 import streamlit as st
 
-from worklog.config import Config
 from worklog.auth import ensure_default_user
-from worklog.ui import require_login, display_jobs_table
+from worklog.config import Config
 from worklog.reporting import compute_totals, format_week_range
+from worklog.ui import require_login, display_jobs_table
 
-API_URL = os.getenv("WORKLOG_API_URL", "http://127.0.0.1:8000")
+API_URL = os.getenv("WORKLOG_API_URL", "http://127.0.0.1:8000").rstrip("/")
 API_KEY = os.getenv("WORKLOG_API_KEY", "supersecret123")
 
 cfg = Config()
@@ -21,6 +21,26 @@ ensure_default_user(cfg)
 require_login()
 
 st.subheader("Weekly Report")
+
+
+def fetch_jobs(params=None) -> list:
+    response = requests.get(
+        f"{API_URL}/jobs",
+        headers={"x-api-key": API_KEY},
+        params=params,
+        timeout=15,
+    )
+    response.raise_for_status()
+
+    payload = response.json()
+
+    if isinstance(payload, dict) and "data" in payload:
+        return payload["data"]
+
+    if isinstance(payload, list):
+        return payload
+
+    raise ValueError("Unexpected API response format")
 
 
 def actual_paid_received_in_week(df: pd.DataFrame, week_start: date) -> float:
@@ -40,9 +60,9 @@ def actual_paid_received_in_week(df: pd.DataFrame, week_start: date) -> float:
     week_end_ts = week_start_ts + pd.Timedelta(days=6)
 
     paid_df = out[
-        (out[status_col] == "paid") &
-        (out["paid_date"] >= week_start_ts) &
-        (out["paid_date"] <= week_end_ts)
+        (out[status_col] == "paid")
+        & (out["paid_date"] >= week_start_ts)
+        & (out["paid_date"] <= week_end_ts)
     ].copy()
 
     def _num(series):
@@ -58,71 +78,81 @@ def actual_paid_received_in_week(df: pd.DataFrame, week_start: date) -> float:
     return round(float(total), 2)
 
 
+today = date.today()
+current_week_start = today - timedelta(days=today.weekday())
+
 try:
-    response = requests.get(
-        f"{API_URL}/jobs",
-        headers={"x-api-key": API_KEY},
-        timeout=15,
-    )
-    response.raise_for_status()
+    # First fetch: enough rows to build week selector
+    records = fetch_jobs({"limit": 500})
+    df = pd.DataFrame(records)
 
-    payload = response.json()
-
-    if isinstance(payload, dict) and "data" in payload:
-        records = payload["data"]
-    elif isinstance(payload, list):
-        records = payload
-    else:
-        st.error("Unexpected API response format.")
-        st.write(payload)
+    if df.empty:
+        st.info("No jobs found.")
+        st.write(f"Week starting: {current_week_start.isoformat()}")
         st.stop()
 
-    df = pd.DataFrame(records)
+    if "work_date" not in df.columns:
+        st.error("API response does not include 'work_date'.")
+        st.write(df)
+        st.stop()
+
+    df = df.copy()
+    df["work_date"] = pd.to_datetime(df["work_date"], errors="coerce").dt.date
+    df = df.dropna(subset=["work_date"])
+
+    if df.empty:
+        st.info("No valid dated jobs found.")
+        st.stop()
+
+    df["_week_start"] = df["work_date"].apply(lambda d: d - timedelta(days=d.weekday()))
+
+    all_weeks = sorted(df["_week_start"].unique().tolist(), reverse=True)
+
+    if current_week_start in all_weeks:
+        options = all_weeks
+        default_index = all_weeks.index(current_week_start)
+    else:
+        options = [current_week_start] + all_weeks
+        default_index = 0
+
+    selected = st.selectbox(
+        "Select week (Mon–Sun)",
+        options,
+        index=default_index,
+        format_func=format_week_range,
+    )
+
+    week_end = selected + timedelta(days=6)
+
+    # Second fetch: fetch data for selected week from API
+    selected_records = fetch_jobs(
+        {
+            "start_date": selected.isoformat(),
+            "end_date": week_end.isoformat(),
+            "limit": 1000,
+        }
+    )
+    sub = pd.DataFrame(selected_records)
+
+    if sub.empty:
+        st.info(f"No jobs found for {format_week_range(selected)}.")
+        st.stop()
+
+    if "work_date" in sub.columns:
+        sub["work_date"] = pd.to_datetime(sub["work_date"], errors="coerce").dt.date
+
+    st.caption(f"Showing jobs for: **{format_week_range(selected)}**")
+
+    for col in ["amount", "waiting_hours", "waiting_amount", "expenses_amount", "hours", "add_pay"]:
+        if col in sub.columns:
+            sub[col] = pd.to_numeric(sub[col], errors="coerce").fillna(0.0)
+
+    t = compute_totals(sub)
+    actual_paid = actual_paid_received_in_week(sub, selected)
 
 except Exception as e:
     st.error(f"Failed to load jobs from API: {e}")
     st.stop()
-
-today = date.today()
-current_week_start = today - timedelta(days=today.weekday())
-
-if df.empty:
-    st.info("No jobs found.")
-    st.write(f"Week starting: {current_week_start.isoformat()}")
-    st.stop()
-
-if "work_date" not in df.columns:
-    st.error("API response does not include 'work_date'.")
-    st.write(df)
-    st.stop()
-
-df = df.copy()
-df["work_date"] = pd.to_datetime(df["work_date"], errors="coerce").dt.date
-df = df.dropna(subset=["work_date"])
-
-df["_week_start"] = df["work_date"].apply(lambda d: d - timedelta(days=d.weekday()))
-
-all_weeks = sorted(df["_week_start"].unique().tolist(), reverse=True)
-options = [current_week_start] + [w for w in all_weeks if w != current_week_start]
-
-selected = st.selectbox(
-    "Select week (Mon–Sun)",
-    options,
-    index=0,
-    format_func=format_week_range,
-)
-
-sub = df[df["_week_start"] == selected].copy()
-sub = sub.drop(columns=["_week_start"], errors="ignore")
-
-st.caption(f"Showing jobs for: **{format_week_range(selected)}**")
-
-for col in ["amount", "waiting_hours", "waiting_amount", "expenses_amount", "hours", "add_pay"]:
-    if col in sub.columns:
-        sub[col] = pd.to_numeric(sub[col], errors="coerce").fillna(0.0)
-
-t = compute_totals(sub)
-actual_paid = actual_paid_received_in_week(df, selected)
 
 c1, c2, c3, c4 = st.columns(4)
 c1.metric("Job Amount", f"£{t.total_job_amount:,.2f}")
@@ -138,4 +168,4 @@ c8.metric("Actually Paid This Week", f"£{actual_paid:,.2f}")
 
 st.divider()
 
-display_jobs_table(cfg, sub, caption="Jobs in selected week", show_paid_date=True)
+display_jobs_table(cfg, sub, caption=f"Jobs for {format_week_range(selected)}", show_paid_date=True)
