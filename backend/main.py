@@ -77,19 +77,16 @@ def get_jobs(
         )
 
 
-@app.get("/jobs/row/{row_id}")
-def get_job_row(row_id: int, x_api_key: str | None = Header(default=None)):
-    verify_api_key(x_api_key)
-    try:
-        return get_job_by_row_id(row_id)
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=str(e),
-        )
+from typing import Optional
+from fastapi import Query
 
+@app.get("/jobs")
+def get_jobs(
+    work_date: Optional[str] = Query(None),
+    limit: Optional[int] = Query(None),
+):
+    jobs = list_jobs(work_date=work_date, limit=limit)
+    return {"data": jobs}
 
 @app.put("/jobs/row/{row_id}")
 def update_job_row(row_id: int, job: JobUpdate, x_api_key: str | None = Header(default=None)):
