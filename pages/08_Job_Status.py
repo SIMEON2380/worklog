@@ -9,7 +9,7 @@ from worklog.auth import ensure_default_user
 from worklog.ui import require_login, editable_jobs_table
 
 API_URL = os.getenv("WORKLOG_API_URL", "http://127.0.0.1:8000")
-API_KEY = "supersecret123"
+API_KEY = os.getenv("WORKLOG_API_KEY", "supersecret123")
 
 cfg = Config()
 DB = make_db(cfg)
@@ -117,6 +117,12 @@ try:
 
     payload = response.json()
 
+    st.write("DEBUG payload type:", type(payload))
+    if isinstance(payload, dict):
+        st.write("DEBUG payload keys:", list(payload.keys()))
+    elif isinstance(payload, list):
+        st.write("DEBUG payload list length:", len(payload))
+
     if isinstance(payload, dict) and "data" in payload:
         records = payload["data"]
     elif isinstance(payload, list):
@@ -127,6 +133,9 @@ try:
         st.stop()
 
     df = pd.DataFrame(records).copy()
+
+    st.write("DEBUG df shape:", df.shape)
+    st.write("DEBUG df columns:", list(df.columns))
 
 except Exception as e:
     st.error(f"Failed to load jobs from API: {e}")
