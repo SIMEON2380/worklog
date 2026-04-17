@@ -126,7 +126,7 @@ today = date.today()
 current_week_start = today - timedelta(days=today.weekday())
 
 try:
-    records = fetch_jobs({"page_size": 1000})
+    records = fetch_jobs()
     df = pd.DataFrame(records)
     df = normalize_jobs(df)
 
