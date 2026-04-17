@@ -6,18 +6,15 @@ import streamlit as st
 
 from worklog.auth import ensure_default_user
 from worklog.config import Config
-from worklog.db import make_db
 from worklog.ui import require_login
 
 API_URL = os.getenv("WORKLOG_API_URL", "http://127.0.0.1:8000").rstrip("/")
 API_KEY = os.getenv("WORKLOG_API_KEY", "supersecret123")
 
 cfg = Config()
-DB = make_db(cfg)
 
 st.set_page_config(page_title=f"{cfg.APP_TITLE} - Add Entry", layout="wide")
 
-DB["ensure_schema"]()
 ensure_default_user(cfg)
 require_login()
 
@@ -181,13 +178,21 @@ if save_clicked:
                 timeout=15,
             )
 
-            if response.status_code == 201:
+            if response.status_code in (200, 201):
                 st.success(f"Job {clean_job_number} saved via API ✅")
                 st.rerun()
-            elif response.status_code == 409:
-                st.error(f"Job {clean_job_number} already exists.")
+            elif response.status_code == 400:
+                st.error("Validation failed.")
+                st.write(api_error_message(response))
             elif response.status_code == 401:
                 st.error("API key rejected. Check WORKLOG_API_KEY.")
+            elif response.status_code == 404:
+                st.error("API endpoint not found.")
+            elif response.status_code == 409:
+                st.error(f"Job {clean_job_number} already exists.")
+            elif response.status_code == 422:
+                st.error("API validation error.")
+                st.write(api_error_message(response))
             else:
                 st.error(f"API failed: {response.status_code}")
                 st.write(api_error_message(response))
