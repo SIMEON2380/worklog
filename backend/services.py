@@ -9,27 +9,27 @@ NORMALIZED_SELECT = """
     SELECT
         id,
         work_date,
-        job_number AS job_id,
-        job_type AS category,
-        job_status,
-        job_amount AS amount,
-        NULL AS waiting_time,
-        0 AS waiting_hours,
-        0 AS waiting_amount,
+        job_id,
+        category,
+        COALESCE(job_status, status) AS job_status,
+        amount,
+        waiting_time,
+        COALESCE(waiting_hours, 0) AS waiting_hours,
+        COALESCE(waiting_amount, 0) AS waiting_amount,
         vehicle_description,
         vehicle_reg,
-        from_loc AS collection_from,
-        to_loc AS delivery_to,
-        expenses AS job_expenses,
-        expense_amount AS expenses_amount,
+        collection_from,
+        delivery_to,
+        job_expenses,
+        COALESCE(expenses_amount, 0) AS expenses_amount,
         auth_code,
         comments,
-        0 AS add_pay,
-        NULL AS paid_date,
-        NULL AS job_outcome,
+        COALESCE(add_pay, 0) AS add_pay,
+        paid_date,
+        job_outcome,
         created_at,
         updated_at
-    FROM entries
+    FROM work_logs
 """
 
 
@@ -85,15 +85,15 @@ def list_jobs(
         params.append(work_date)
 
     if job_status:
-        where_clauses.append("job_status = ?")
+        where_clauses.append("COALESCE(job_status, status) = ?")
         params.append(job_status)
 
     if job_outcome:
-        # placeholder for forward compatibility; current entries schema does not store this
-        where_clauses.append("1 = 0")
+        where_clauses.append("job_outcome = ?")
+        params.append(job_outcome)
 
     if category:
-        where_clauses.append("job_type = ?")
+        where_clauses.append("category = ?")
         params.append(category)
 
     if start_date:
@@ -107,10 +107,10 @@ def list_jobs(
     if search:
         where_clauses.append(
             """(
-                CAST(job_number AS TEXT) LIKE ?
+                CAST(job_id AS TEXT) LIKE ?
                 OR COALESCE(vehicle_reg, '') LIKE ?
-                OR COALESCE(from_loc, '') LIKE ?
-                OR COALESCE(to_loc, '') LIKE ?
+                OR COALESCE(collection_from, '') LIKE ?
+                OR COALESCE(delivery_to, '') LIKE ?
                 OR COALESCE(comments, '') LIKE ?
                 OR COALESCE(auth_code, '') LIKE ?
             )"""
@@ -144,7 +144,7 @@ def list_jobs(
 def get_job_by_id(job_id: str) -> dict:
     query = (
         NORMALIZED_SELECT
-        + " WHERE CAST(job_number AS TEXT) = ? ORDER BY work_date DESC, id DESC LIMIT 1"
+        + " WHERE CAST(job_id AS TEXT) = ? ORDER BY work_date DESC, id DESC LIMIT 1"
     )
     result = _run_select(query, [str(job_id)], one=True)
 
@@ -169,18 +169,26 @@ def create_job_record(job) -> dict:
 
     field_map = {
         "work_date": "work_date",
-        "job_id": "job_number",
-        "category": "job_type",
+        "job_id": "job_id",
+        "category": "category",
         "vehicle_description": "vehicle_description",
         "vehicle_reg": "vehicle_reg",
-        "collection_from": "from_loc",
-        "delivery_to": "to_loc",
-        "amount": "job_amount",
-        "job_expenses": "expenses",
-        "expenses_amount": "expense_amount",
+        "collection_from": "collection_from",
+        "delivery_to": "delivery_to",
+        "amount": "amount",
+        "job_expenses": "job_expenses",
+        "expenses_amount": "expenses_amount",
         "comments": "comments",
         "auth_code": "auth_code",
         "job_status": "job_status",
+        "waiting_time": "waiting_time",
+        "waiting_hours": "waiting_hours",
+        "waiting_amount": "waiting_amount",
+        "add_pay": "add_pay",
+        "paid_date": "paid_date",
+        "job_outcome": "job_outcome",
+        "description": "description",
+        "hours": "hours",
     }
 
     insert_data = {}
@@ -200,7 +208,7 @@ def create_job_record(job) -> dict:
 
     try:
         cur.execute(
-            f"INSERT INTO entries ({columns}) VALUES ({placeholders})",
+            f"INSERT INTO work_logs ({columns}) VALUES ({placeholders})",
             values,
         )
         conn.commit()
@@ -223,18 +231,26 @@ def update_job_record(job_id: str, job) -> dict:
 
     field_map = {
         "work_date": "work_date",
-        "job_id": "job_number",
-        "category": "job_type",
+        "job_id": "job_id",
+        "category": "category",
         "vehicle_description": "vehicle_description",
         "vehicle_reg": "vehicle_reg",
-        "collection_from": "from_loc",
-        "delivery_to": "to_loc",
-        "amount": "job_amount",
-        "job_expenses": "expenses",
-        "expenses_amount": "expense_amount",
+        "collection_from": "collection_from",
+        "delivery_to": "delivery_to",
+        "amount": "amount",
+        "job_expenses": "job_expenses",
+        "expenses_amount": "expenses_amount",
         "comments": "comments",
         "auth_code": "auth_code",
         "job_status": "job_status",
+        "waiting_time": "waiting_time",
+        "waiting_hours": "waiting_hours",
+        "waiting_amount": "waiting_amount",
+        "add_pay": "add_pay",
+        "paid_date": "paid_date",
+        "job_outcome": "job_outcome",
+        "description": "description",
+        "hours": "hours",
     }
 
     update_data = {}
@@ -254,7 +270,7 @@ def update_job_record(job_id: str, job) -> dict:
 
     try:
         cur.execute(
-            f"UPDATE entries SET {set_clause} WHERE CAST(job_number AS TEXT) = ?",
+            f"UPDATE work_logs SET {set_clause} WHERE CAST(job_id AS TEXT) = ?",
             values,
         )
         conn.commit()
@@ -278,18 +294,26 @@ def update_job_row_record(row_id: int, job) -> dict:
 
     field_map = {
         "work_date": "work_date",
-        "job_id": "job_number",
-        "category": "job_type",
+        "job_id": "job_id",
+        "category": "category",
         "vehicle_description": "vehicle_description",
         "vehicle_reg": "vehicle_reg",
-        "collection_from": "from_loc",
-        "delivery_to": "to_loc",
-        "amount": "job_amount",
-        "job_expenses": "expenses",
-        "expenses_amount": "expense_amount",
+        "collection_from": "collection_from",
+        "delivery_to": "delivery_to",
+        "amount": "amount",
+        "job_expenses": "job_expenses",
+        "expenses_amount": "expenses_amount",
         "comments": "comments",
         "auth_code": "auth_code",
         "job_status": "job_status",
+        "waiting_time": "waiting_time",
+        "waiting_hours": "waiting_hours",
+        "waiting_amount": "waiting_amount",
+        "add_pay": "add_pay",
+        "paid_date": "paid_date",
+        "job_outcome": "job_outcome",
+        "description": "description",
+        "hours": "hours",
     }
 
     update_data = {}
@@ -309,7 +333,7 @@ def update_job_row_record(row_id: int, job) -> dict:
 
     try:
         cur.execute(
-            f"UPDATE entries SET {set_clause} WHERE id = ?",
+            f"UPDATE work_logs SET {set_clause} WHERE id = ?",
             values,
         )
         conn.commit()
@@ -333,7 +357,7 @@ def delete_job_record(job_id: str) -> dict:
     cur = conn.cursor()
 
     try:
-        cur.execute("DELETE FROM entries WHERE CAST(job_number AS TEXT) = ?", [str(job_id)])
+        cur.execute("DELETE FROM work_logs WHERE CAST(job_id AS TEXT) = ?", [str(job_id)])
         conn.commit()
 
         if cur.rowcount == 0:
@@ -355,7 +379,7 @@ def delete_job_row_record(row_id: int) -> dict:
     cur = conn.cursor()
 
     try:
-        cur.execute("DELETE FROM entries WHERE id = ?", [row_id])
+        cur.execute("DELETE FROM work_logs WHERE id = ?", [row_id])
         conn.commit()
 
         if cur.rowcount == 0:
