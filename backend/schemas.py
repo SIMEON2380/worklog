@@ -1,3 +1,4 @@
+from datetime import date, timedelta
 from typing import Optional
 
 from pydantic import BaseModel, field_validator
@@ -47,6 +48,26 @@ def validate_waiting_time_value(value: Optional[str]) -> Optional[str]:
     return value
 
 
+def validate_work_date_value(value: Optional[str]) -> Optional[str]:
+    if value is None:
+        return None
+
+    value = str(value).strip()
+    if not value:
+        return None
+
+    try:
+        parsed_date = date.fromisoformat(value)
+    except ValueError:
+        raise ValueError("work_date must be in YYYY-MM-DD format")
+
+    max_allowed = date.today() + timedelta(days=7)
+    if parsed_date > max_allowed:
+        raise ValueError("work_date cannot be more than 7 days in the future")
+
+    return value
+
+
 class JobCreate(BaseModel):
     work_date: str
     job_id: str
@@ -67,6 +88,11 @@ class JobCreate(BaseModel):
     add_pay: Optional[float] = 0.0
     paid_date: Optional[str] = None
     job_outcome: Optional[str] = None
+
+    @field_validator("work_date")
+    @classmethod
+    def validate_work_date(cls, value):
+        return validate_work_date_value(value)
 
     @field_validator("job_status")
     @classmethod
@@ -119,6 +145,13 @@ class JobUpdate(BaseModel):
     add_pay: Optional[float] = None
     paid_date: Optional[str] = None
     job_outcome: Optional[str] = None
+
+    @field_validator("work_date")
+    @classmethod
+    def validate_work_date(cls, value):
+        if value is None:
+            return value
+        return validate_work_date_value(value)
 
     @field_validator("job_status")
     @classmethod
