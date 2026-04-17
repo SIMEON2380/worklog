@@ -34,6 +34,9 @@ def fetch_jobs(params=None) -> list:
 
     payload = response.json()
 
+    if isinstance(payload, dict) and "items" in payload:
+        return payload["items"]
+
     if isinstance(payload, dict) and "data" in payload:
         return payload["data"]
 
@@ -43,24 +46,65 @@ def fetch_jobs(params=None) -> list:
     raise ValueError("Unexpected API response format")
 
 
+def normalize_jobs(frame: pd.DataFrame) -> pd.DataFrame:
+    if frame.empty:
+        return frame.copy()
+
+    df = frame.copy()
+
+    for col in ["amount", "waiting_hours", "waiting_amount", "expenses_amount", "add_pay"]:
+        if col not in df.columns:
+            df[col] = 0.0
+        df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0.0)
+
+    if "job_status" not in df.columns:
+        df["job_status"] = "Start"
+
+    if "job_outcome" not in df.columns:
+        df["job_outcome"] = ""
+
+    if "paid_date" not in df.columns:
+        df["paid_date"] = pd.NaT
+
+    df["job_status"] = (
+        df["job_status"]
+        .fillna("Start")
+        .astype(str)
+        .str.strip()
+        .replace("", "Start")
+        .str.title()
+    )
+
+    df["job_outcome"] = (
+        df["job_outcome"]
+        .fillna("")
+        .astype(str)
+        .str.strip()
+        .str.title()
+    )
+
+    if "work_date" in df.columns:
+        df["work_date"] = pd.to_datetime(df["work_date"], errors="coerce").dt.date
+
+    df["paid_date"] = pd.to_datetime(df["paid_date"], errors="coerce")
+
+    return df
+
+
 def actual_paid_received_in_week(df: pd.DataFrame, week_start: date) -> float:
     out = df.copy()
 
-    if out.empty or "paid_date" not in out.columns:
+    if out.empty or "paid_date" not in out.columns or "job_status" not in out.columns:
         return 0.0
 
-    status_col = "job_status" if "job_status" in out.columns else ("status" if "status" in out.columns else None)
-    if not status_col:
-        return 0.0
-
-    out[status_col] = out[status_col].fillna("").astype(str).str.strip().str.lower()
+    out["job_status"] = out["job_status"].fillna("").astype(str).str.strip().str.lower()
     out["paid_date"] = pd.to_datetime(out["paid_date"], errors="coerce")
 
     week_start_ts = pd.to_datetime(week_start)
     week_end_ts = week_start_ts + pd.Timedelta(days=6)
 
     paid_df = out[
-        (out[status_col] == "paid")
+        (out["job_status"] == "paid")
         & (out["paid_date"] >= week_start_ts)
         & (out["paid_date"] <= week_end_ts)
     ].copy()
@@ -82,9 +126,9 @@ today = date.today()
 current_week_start = today - timedelta(days=today.weekday())
 
 try:
-    # First fetch: enough rows to build week selector
-    records = fetch_jobs({"limit": 500})
+    records = fetch_jobs({"page_size": 1000})
     df = pd.DataFrame(records)
+    df = normalize_jobs(df)
 
     if df.empty:
         st.info("No jobs found.")
@@ -96,8 +140,6 @@ try:
         st.write(df)
         st.stop()
 
-    df = df.copy()
-    df["work_date"] = pd.to_datetime(df["work_date"], errors="coerce").dt.date
     df = df.dropna(subset=["work_date"])
 
     if df.empty:
@@ -122,30 +164,13 @@ try:
         format_func=format_week_range,
     )
 
-    week_end = selected + timedelta(days=6)
-
-    # Second fetch: fetch data for selected week from API
-    selected_records = fetch_jobs(
-        {
-            "start_date": selected.isoformat(),
-            "end_date": week_end.isoformat(),
-            "limit": 1000,
-        }
-    )
-    sub = pd.DataFrame(selected_records)
+    sub = df[df["_week_start"] == selected].copy()
 
     if sub.empty:
         st.info(f"No jobs found for {format_week_range(selected)}.")
         st.stop()
 
-    if "work_date" in sub.columns:
-        sub["work_date"] = pd.to_datetime(sub["work_date"], errors="coerce").dt.date
-
     st.caption(f"Showing jobs for: **{format_week_range(selected)}**")
-
-    for col in ["amount", "waiting_hours", "waiting_amount", "expenses_amount", "hours", "add_pay"]:
-        if col in sub.columns:
-            sub[col] = pd.to_numeric(sub[col], errors="coerce").fillna(0.0)
 
     t = compute_totals(sub)
     actual_paid = actual_paid_received_in_week(sub, selected)
