@@ -1,10 +1,15 @@
+import os
 import streamlit as st
 import pandas as pd
+import requests
 
 from worklog.config import Config
 from worklog.db import make_db
 from worklog.auth import ensure_default_user
 from worklog.ui import require_login
+
+API_URL = os.getenv("WORKLOG_API_URL", "http://127.0.0.1:8000")
+API_KEY = os.getenv("WORKLOG_API_KEY", "supersecret123")
 
 cfg = Config()
 DB = make_db(cfg)
@@ -17,7 +22,50 @@ require_login()
 
 st.subheader("Advanced Insights")
 
-df = DB["read_all"]().copy()
+
+# -------------------------
+# API loader
+# -------------------------
+def fetch_jobs_from_api() -> pd.DataFrame:
+    try:
+        response = requests.get(
+            f"{API_URL}/jobs",
+            headers={"x-api-key": API_KEY},
+            params={"all_records": "true"},
+            timeout=20,
+        )
+
+        if response.status_code != 200:
+            st.error(f"API error: {response.status_code}")
+            try:
+                st.code(response.text)
+            except Exception:
+                pass
+            return pd.DataFrame()
+
+        payload = response.json()
+
+        if isinstance(payload, list):
+            return pd.DataFrame(payload)
+
+        if isinstance(payload, dict):
+            if "data" in payload and isinstance(payload["data"], list):
+                return pd.DataFrame(payload["data"])
+            if "jobs" in payload and isinstance(payload["jobs"], list):
+                return pd.DataFrame(payload["jobs"])
+
+        st.error("Unexpected API response format.")
+        return pd.DataFrame()
+
+    except requests.exceptions.RequestException as e:
+        st.error(f"Could not connect to API: {e}")
+        return pd.DataFrame()
+
+
+# -------------------------
+# Load data from API
+# -------------------------
+df = fetch_jobs_from_api().copy()
 
 if df.empty:
     st.info("No jobs found.")
@@ -82,6 +130,7 @@ KNOWN_MAKES = {
     "CUPRA": ["CUPRA"],
 }
 
+
 def extract_make(desc: str) -> str:
     text = str(desc).strip().upper()
     if not text:
@@ -97,6 +146,7 @@ def extract_make(desc: str) -> str:
         return "UNKNOWN"
 
     return words[0]
+
 
 df["vehicle_make"] = df["vehicle_description"].apply(extract_make)
 
@@ -118,8 +168,8 @@ if selected_make != "All":
 if search_text.strip():
     q = search_text.strip().upper()
     filtered = filtered[
-        filtered["vehicle_make"].str.upper().str.contains(q, na=False)
-        | filtered["vehicle_description"].str.upper().str.contains(q, na=False)
+        filtered["vehicle_make"].astype(str).str.upper().str.contains(q, na=False)
+        | filtered["vehicle_description"].astype(str).str.upper().str.contains(q, na=False)
     ]
 
 if filtered.empty:
@@ -180,6 +230,7 @@ st.dataframe(desc_counts.head(30), use_container_width=True, hide_index=True)
 if search_text.strip():
     st.markdown("### Search result summary")
     last_driven = None
+
     if "work_date" in filtered.columns and filtered["work_date"].notna().any():
         last_driven = filtered["work_date"].max()
 
@@ -194,6 +245,5 @@ if search_text.strip():
 # Optional raw records
 # -------------------------
 with st.expander("Show matching jobs"):
-    cols_to_drop = ["vehicle_make"]
-    raw = filtered.drop(columns=cols_to_drop, errors="ignore")
-    st.dataframe(raw, use_container_width=True)
+    raw = filtered.drop(columns=["vehicle_make"], errors="ignore")
+    st.dataframe(raw, use_container_width=True, hide_index=True)

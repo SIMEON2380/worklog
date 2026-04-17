@@ -6,19 +6,16 @@ import requests
 import streamlit as st
 
 from worklog.config import Config
-from worklog.db import make_db
 from worklog.auth import ensure_default_user
 from worklog.ui import require_login
 
-API_URL = os.getenv("WORKLOG_API_URL", "http://127.0.0.1:8000")
+API_URL = os.getenv("WORKLOG_API_URL", "http://127.0.0.1:8000").rstrip("/")
 API_KEY = os.getenv("WORKLOG_API_KEY", "supersecret123")
 
 cfg = Config()
-DB = make_db(cfg)
 
 st.set_page_config(page_title=f"{cfg.APP_TITLE} - Edit Jobs", layout="wide")
 
-DB["ensure_schema"]()
 ensure_default_user(cfg)
 require_login()
 
@@ -96,6 +93,9 @@ def load_jobs_df() -> pd.DataFrame:
     if isinstance(payload, dict) and "data" in payload:
         return pd.DataFrame(payload.get("data", []))
 
+    if isinstance(payload, dict) and "items" in payload:
+        return pd.DataFrame(payload.get("items", []))
+
     if isinstance(payload, list):
         return pd.DataFrame(payload)
 
@@ -104,6 +104,12 @@ def load_jobs_df() -> pd.DataFrame:
 
 try:
     df = load_jobs_df().copy()
+except requests.exceptions.ConnectionError:
+    st.error(f"Could not connect to API at {API_URL}")
+    st.stop()
+except requests.exceptions.Timeout:
+    st.error("API request timed out while loading jobs.")
+    st.stop()
 except Exception as e:
     st.error(f"Failed to load jobs from API: {e}")
     st.stop()
@@ -322,7 +328,10 @@ with st.form("edit_job_form"):
             else:
                 new_cmp = new_val
 
-            if pd.isna(old_cmp) and pd.isna(new_cmp):
+            old_is_na = pd.isna(old_cmp) if not isinstance(old_cmp, (list, dict)) else False
+            new_is_na = pd.isna(new_cmp) if not isinstance(new_cmp, (list, dict)) else False
+
+            if old_is_na and new_is_na:
                 return
             if old_cmp == new_cmp:
                 return

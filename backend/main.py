@@ -65,6 +65,7 @@ def get_jobs(
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=50, ge=1, le=200),
     limit: Optional[int] = Query(default=None, ge=1),
+    all_records: bool = Query(default=False),
 ):
     verify_api_key(x_api_key)
 
@@ -73,8 +74,6 @@ def get_jobs(
 
         kwargs = {}
 
-        # Only pass arguments if they were provided, so we stay compatible
-        # with different versions of services.py
         if work_date is not None:
             kwargs["work_date"] = work_date
         if job_status is not None:
@@ -95,10 +94,11 @@ def get_jobs(
             kwargs["page_size"] = page_size
         if limit is not None:
             kwargs["limit"] = limit
+        if all_records is not None:
+            kwargs["all_records"] = all_records
 
         result = list_jobs_fn(**kwargs)
 
-        # Normalize response shape
         if isinstance(result, dict):
             return result
 
@@ -112,20 +112,46 @@ def get_jobs(
         try:
             list_jobs_fn = resolve_service("list_jobs")
 
-            if work_date is not None and limit is not None:
-                result = list_jobs_fn(work_date=work_date, limit=limit)
-            elif work_date is not None:
-                result = list_jobs_fn(work_date=work_date)
-            elif limit is not None:
-                result = list_jobs_fn(limit=limit)
-            else:
-                result = list_jobs_fn()
+            kwargs = {}
+
+            if work_date is not None:
+                kwargs["work_date"] = work_date
+            if limit is not None:
+                kwargs["limit"] = limit
+            if all_records is not None:
+                kwargs["all_records"] = all_records
+
+            result = list_jobs_fn(**kwargs)
 
             if isinstance(result, dict):
                 return result
             if isinstance(result, list):
                 return {"data": result}
             return {"data": []}
+
+        except TypeError:
+            # Final fallback for very old versions that do not support all_records
+            try:
+                if work_date is not None and limit is not None:
+                    result = list_jobs_fn(work_date=work_date, limit=limit)
+                elif work_date is not None:
+                    result = list_jobs_fn(work_date=work_date)
+                elif limit is not None:
+                    result = list_jobs_fn(limit=limit)
+                else:
+                    result = list_jobs_fn()
+
+                if isinstance(result, dict):
+                    return result
+                if isinstance(result, list):
+                    return {"data": result}
+                return {"data": []}
+
+            except Exception as e:
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail=str(e),
+                )
 
         except Exception as e:
             raise HTTPException(

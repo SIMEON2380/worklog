@@ -75,6 +75,7 @@ def list_jobs(
     end_date: Optional[str] = None,
     page: int = 1,
     page_size: int = 50,
+    all_records: bool = False,
 ) -> dict:
     query = NORMALIZED_SELECT
     where_clauses = []
@@ -109,6 +110,7 @@ def list_jobs(
             """(
                 CAST(job_id AS TEXT) LIKE ?
                 OR COALESCE(vehicle_reg, '') LIKE ?
+                OR COALESCE(vehicle_description, '') LIKE ?
                 OR COALESCE(collection_from, '') LIKE ?
                 OR COALESCE(delivery_to, '') LIKE ?
                 OR COALESCE(comments, '') LIKE ?
@@ -116,28 +118,52 @@ def list_jobs(
             )"""
         )
         term = f"%{search}%"
-        params.extend([term, term, term, term, term, term])
+        params.extend([term, term, term, term, term, term, term])
 
     if where_clauses:
         query += " WHERE " + " AND ".join(where_clauses)
 
     query += " ORDER BY work_date DESC, id DESC"
 
-    if limit:
-        query += " LIMIT ?"
-        params.append(limit)
+    # Explicit limit mode
+    if limit is not None:
+        limited_query = query + " LIMIT ?"
+        limited_params = params + [limit]
+        data = _run_select(limited_query, limited_params, one=False)
+        return {
+            "data": data,
+            "limit": limit,
+            "count": len(data),
+        }
+
+    # Return all rows for reports / insights pages
+    if all_records:
         data = _run_select(query, params, one=False)
-        return {"data": data}
+        return {
+            "data": data,
+            "all_records": True,
+            "count": len(data),
+        }
+
+    # Default paginated mode
+    if page < 1:
+        page = 1
+
+    if page_size < 1:
+        page_size = 50
 
     offset = (page - 1) * page_size
-    query += " LIMIT ? OFFSET ?"
-    params.extend([page_size, offset])
+    paginated_query = query + " LIMIT ? OFFSET ?"
+    paginated_params = params + [page_size, offset]
 
-    data = _run_select(query, params, one=False)
+    data = _run_select(paginated_query, paginated_params, one=False)
+
     return {
         "data": data,
         "page": page,
         "page_size": page_size,
+        "count": len(data),
+        "all_records": False,
     }
 
 
