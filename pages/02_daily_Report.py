@@ -22,6 +22,53 @@ require_login()
 
 st.subheader("Daily Report")
 
+
+def normalize_jobs(frame: pd.DataFrame) -> pd.DataFrame:
+    if frame.empty:
+        return frame.copy()
+
+    df = frame.copy()
+
+    for col in [
+        "amount",
+        "waiting_hours",
+        "waiting_amount",
+        "expenses_amount",
+        "add_pay",
+    ]:
+        if col not in df.columns:
+            df[col] = 0.0
+        df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0.0)
+
+    if "job_status" not in df.columns:
+        df["job_status"] = "Start"
+
+    if "job_outcome" not in df.columns:
+        df["job_outcome"] = ""
+
+    df["job_status"] = (
+        df["job_status"]
+        .fillna("Start")
+        .astype(str)
+        .str.strip()
+        .replace("", "Start")
+        .str.title()
+    )
+
+    df["job_outcome"] = (
+        df["job_outcome"]
+        .fillna("")
+        .astype(str)
+        .str.strip()
+        .str.title()
+    )
+
+    if "work_date" in df.columns:
+        df["work_date"] = pd.to_datetime(df["work_date"], errors="coerce").dt.date
+
+    return df
+
+
 try:
     response = requests.get(
         f"{API_URL}/jobs",
@@ -32,7 +79,9 @@ try:
 
     payload = response.json()
 
-    if isinstance(payload, dict) and "data" in payload:
+    if isinstance(payload, dict) and "items" in payload:
+        records = payload["items"]
+    elif isinstance(payload, dict) and "data" in payload:
         records = payload["data"]
     elif isinstance(payload, list):
         records = payload
@@ -42,6 +91,7 @@ try:
         st.stop()
 
     df = pd.DataFrame(records)
+    df = normalize_jobs(df)
 
 except Exception as e:
     st.error(f"Failed to load jobs from API: {e}")
@@ -59,8 +109,6 @@ if "work_date" not in df.columns:
     st.write(df)
     st.stop()
 
-df = df.copy()
-df["work_date"] = pd.to_datetime(df["work_date"], errors="coerce").dt.date
 df = df.dropna(subset=["work_date"])
 
 all_days = sorted(df["work_date"].unique().tolist(), reverse=True)
