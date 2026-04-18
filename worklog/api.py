@@ -18,10 +18,13 @@ def fetch_jobs(params=None):
 
     payload = response.json()
 
-    if isinstance(payload, dict) and "data" in payload:
-        return payload["data"]
+    if isinstance(payload, dict):
+        if "data" in payload:
+            return payload["data"]
+        if "jobs" in payload:
+            return payload["jobs"]
 
     if isinstance(payload, list):
         return payload
 
-    raise ValueError("Unexpected API response format")
+    raise ValueError(f"Unexpected API response format: {payload}")
