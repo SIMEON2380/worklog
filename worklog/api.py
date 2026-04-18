@@ -2,11 +2,14 @@ import os
 import requests
 
 API_URL = os.getenv("WORKLOG_API_URL", "http://127.0.0.1:8000").rstrip("/")
-API_KEY = os.getenv("WORKLOG_API_KEY") or os.getenv("API_KEY")
+API_KEY = os.getenv("WORKLOG_API_KEY")
+
+if not API_KEY:
+    raise RuntimeError("WORKLOG_API_KEY is not set in environment")
 
 
 def fetch_jobs(params=None):
-    headers = {"x-api-key": API_KEY} if API_KEY else {}
+    headers = {"x-api-key": API_KEY}
 
     try:
         response = requests.get(
