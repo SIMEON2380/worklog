@@ -2,12 +2,22 @@ import logging
 import os
 from typing import Optional
 
-from fastapi import FastAPI, Header, HTTPException, Query, status
+from fastapi import FastAPI, Header, HTTPException, Query, Request, status
 
 from backend.schemas import JobCreate, JobUpdate
 import backend.services as services
 
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
+from slowapi.middleware import SlowAPIMiddleware
+
 app = FastAPI()
+
+limiter = Limiter(key_func=get_remote_address)
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+app.add_middleware(SlowAPIMiddleware)
 
 logger = logging.getLogger("worklog.security")
 
@@ -48,7 +58,9 @@ def health():
 
 
 @app.get("/jobs")
+@limiter.limit("60/minute")
 def get_jobs(
+    request: Request,
     x_api_key: str | None = Header(default=None),
     work_date: Optional[str] = Query(default=None),
     job_status: Optional[str] = Query(default=None),
@@ -79,7 +91,12 @@ def get_jobs(
 
 
 @app.get("/jobs/{job_id}")
-def get_job(job_id: str, x_api_key: str | None = Header(default=None)):
+@limiter.limit("60/minute")
+def get_job(
+    request: Request,
+    job_id: str,
+    x_api_key: str | None = Header(default=None),
+):
     verify_api_key(x_api_key)
     try:
         return services.get_job_by_id(job_id)
@@ -93,7 +110,12 @@ def get_job(job_id: str, x_api_key: str | None = Header(default=None)):
 
 
 @app.post("/jobs", status_code=status.HTTP_201_CREATED)
-def create_job(payload: JobCreate, x_api_key: str | None = Header(default=None)):
+@limiter.limit("30/minute")
+def create_job(
+    request: Request,
+    payload: JobCreate,
+    x_api_key: str | None = Header(default=None),
+):
     verify_api_key(x_api_key)
     try:
         return services.create_job_record(payload)
@@ -107,7 +129,9 @@ def create_job(payload: JobCreate, x_api_key: str | None = Header(default=None))
 
 
 @app.put("/jobs/{job_id}")
+@limiter.limit("30/minute")
 def update_job(
+    request: Request,
     job_id: str,
     payload: JobUpdate,
     x_api_key: str | None = Header(default=None),
@@ -125,7 +149,12 @@ def update_job(
 
 
 @app.delete("/jobs/{job_id}")
-def delete_job(job_id: str, x_api_key: str | None = Header(default=None)):
+@limiter.limit("20/minute")
+def delete_job(
+    request: Request,
+    job_id: str,
+    x_api_key: str | None = Header(default=None),
+):
     verify_api_key(x_api_key)
     try:
         return services.delete_job_record(job_id)
