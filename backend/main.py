@@ -12,6 +12,8 @@ from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware
 
+logging.basicConfig(level=logging.INFO)
+
 app = FastAPI()
 
 limiter = Limiter(key_func=get_remote_address)
@@ -22,6 +24,21 @@ app.add_middleware(SlowAPIMiddleware)
 logger = logging.getLogger("worklog.security")
 
 API_KEY = os.getenv("WORKLOG_API_KEY") or os.getenv("API_KEY")
+
+
+@app.middleware("http")
+async def log_requests(request: Request, call_next):
+    client_ip = request.client.host if request.client else "unknown"
+    method = request.method
+    path = request.url.path
+
+    logger.info(f"{client_ip} -> {method} {path}")
+
+    response = await call_next(request)
+
+    logger.info(f"{client_ip} <- {response.status_code} {path}")
+
+    return response
 
 
 def verify_api_key(x_api_key: str | None = Header(default=None)):
