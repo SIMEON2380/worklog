@@ -1,6 +1,8 @@
 import logging
 import os
-from fastapi import FastAPI, Header, HTTPException, status
+from typing import Optional
+
+from fastapi import FastAPI, Header, HTTPException, Query, status
 
 from backend.schemas import JobCreate, JobUpdate
 import backend.services as services
@@ -17,14 +19,21 @@ def verify_api_key(x_api_key: str | None = Header(default=None)):
         logger.error("API key not configured on server")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="API key is not configured on the server"
+            detail="API key not configured on server",
+        )
+
+    if not x_api_key:
+        logger.warning("Missing API key attempt")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Missing API key",
         )
 
     if x_api_key != API_KEY:
-        logger.warning(f"Invalid API key attempt: {x_api_key}")
+        logger.warning("Invalid API key attempt")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid or missing API key"
+            detail="Unauthorized access attempt",
         )
 
 
@@ -50,13 +59,22 @@ def get_jobs(
 ):
     verify_api_key(x_api_key)
     try:
-        return list_jobs()
+        return services.list_jobs(
+            work_date=work_date,
+            job_status=job_status,
+            category=category,
+            limit=limit,
+            page=page,
+            all_records=all_records,
+        )
     except HTTPException:
         raise
+    except TypeError:
+        return services.list_jobs()
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=str(e)
+            detail=str(e),
         )
 
 
@@ -64,41 +82,45 @@ def get_jobs(
 def get_job(job_id: str, x_api_key: str | None = Header(default=None)):
     verify_api_key(x_api_key)
     try:
-        return get_job_by_id(job_id)
+        return services.get_job_by_id(job_id)
     except HTTPException:
         raise
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=str(e)
+            detail=str(e),
         )
 
 
-@app.post("/jobs")
+@app.post("/jobs", status_code=status.HTTP_201_CREATED)
 def create_job(payload: JobCreate, x_api_key: str | None = Header(default=None)):
     verify_api_key(x_api_key)
     try:
-        return create_job_record(job)
+        return services.create_job_record(payload)
     except HTTPException:
         raise
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=str(e)
+            detail=str(e),
         )
 
 
 @app.put("/jobs/{job_id}")
-def update_job(job_id: str, job: JobUpdate, x_api_key: str | None = Header(default=None)):
+def update_job(
+    job_id: str,
+    payload: JobUpdate,
+    x_api_key: str | None = Header(default=None),
+):
     verify_api_key(x_api_key)
     try:
-        return update_job_record(job_id, job)
+        return services.update_job_record(job_id, payload)
     except HTTPException:
         raise
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=str(e)
+            detail=str(e),
         )
 
 
@@ -106,11 +128,11 @@ def update_job(job_id: str, job: JobUpdate, x_api_key: str | None = Header(defau
 def delete_job(job_id: str, x_api_key: str | None = Header(default=None)):
     verify_api_key(x_api_key)
     try:
-        return delete_job_record(job_id)
+        return services.delete_job_record(job_id)
     except HTTPException:
         raise
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=str(e)
+            detail=str(e),
         )
