@@ -7,7 +7,7 @@ st.title("API Add Entry (Test)")
 
 # API config
 API_URL = os.getenv("WORKLOG_API_URL", "http://127.0.0.1:8000")
-API_KEY = os.getenv("WORKLOG_API_KEY", "supersecret123")
+API_KEY = os.getenv("WORKLOG_API_KEY", "")
 
 # form
 work_date = st.date_input("Work Date", value=date.today())

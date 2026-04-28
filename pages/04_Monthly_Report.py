@@ -11,7 +11,7 @@ from worklog.reporting import compute_totals, format_month_label
 from worklog.ui import require_login, display_jobs_table
 
 API_URL = os.getenv("WORKLOG_API_URL", "http://127.0.0.1:8000").rstrip("/")
-API_KEY = os.getenv("WORKLOG_API_KEY", "supersecret123")
+API_KEY = os.getenv("WORKLOG_API_KEY", "")
 
 cfg = Config()
 

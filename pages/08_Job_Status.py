@@ -10,7 +10,7 @@ from worklog.db import make_db
 from worklog.ui import require_login, editable_jobs_table
 
 API_URL = os.getenv("WORKLOG_API_URL", "http://127.0.0.1:8000").rstrip("/")
-API_KEY = os.getenv("WORKLOG_API_KEY", "supersecret123")
+API_KEY = os.getenv("WORKLOG_API_KEY", "")
 
 cfg = Config()
 DB = make_db(cfg)
