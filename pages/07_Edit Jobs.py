@@ -374,7 +374,7 @@ with st.form("edit_job_form"):
         if diffs:
             try:
                 response = requests.put(
-                    f"{API_URL}/jobs/{row_id}",
+                    f"{API_URL}/jobs/row/{row_id}",
                     json=diffs,
                     headers={"x-api-key": API_KEY},
                     timeout=20,
@@ -410,7 +410,7 @@ if st.button("Delete selected job"):
     else:
         try:
             response = requests.delete(
-                f"{API_URL}/jobs/{row_id}",
+                f"{API_URL}/jobs/row/{row_id}",
                 headers={"x-api-key": API_KEY},
                 timeout=20,
             )
