@@ -145,6 +145,45 @@ def create_job(
         )
 
 
+@app.put("/jobs/row/{row_id}")
+@limiter.limit("30/minute")
+def update_job_row(
+    request: Request,
+    row_id: int,
+    payload: JobUpdate,
+    x_api_key: str | None = Header(default=None),
+):
+    verify_api_key(x_api_key)
+    try:
+        return services.update_job_row_record(row_id, payload)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=str(e),
+        )
+
+
+@app.delete("/jobs/row/{row_id}")
+@limiter.limit("20/minute")
+def delete_job_row(
+    request: Request,
+    row_id: int,
+    x_api_key: str | None = Header(default=None),
+):
+    verify_api_key(x_api_key)
+    try:
+        return services.delete_job_row_record(row_id)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=str(e),
+        )
+
+
 @app.put("/jobs/{job_id}")
 @limiter.limit("30/minute")
 def update_job(
