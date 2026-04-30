@@ -11,9 +11,48 @@ API_KEY = os.getenv("WORKLOG_API_KEY", "")
 
 HEADERS = {"x-api-key": API_KEY}
 
+CATEGORY_OPTIONS = [
+    "STRD Trade Plate",
+    "Inspect and Collect",
+    "Inspect and Collect 2",
+]
+
+JOB_STATUS_OPTIONS = [
+    "Start",
+    "Completed",
+    "Aborted",
+    "Paid",
+    "Pending",
+    "Withdraw",
+]
+
+JOB_OUTCOME_OPTIONS = [
+    "Completed",
+    "Aborted",
+    "Withdraw",
+    "Pending",
+]
+
 
 st.set_page_config(page_title="Power Page", layout="wide")
 st.title("⚡ Power Page")
+
+
+def safe_select_index(options, current_value, default_index=0):
+    current_value = str(current_value or "").strip()
+    return options.index(current_value) if current_value in options else default_index
+
+
+def safe_date_value(value):
+    if value is None or value == "":
+        return None
+
+    parsed = pd.to_datetime(value, errors="coerce")
+
+    if pd.isna(parsed):
+        return None
+
+    return parsed.date()
 
 
 def fetch_jobs():
@@ -192,13 +231,21 @@ with tab3:
                 "Work date",
                 value=selected["work_date"].date() if pd.notna(selected["work_date"]) else date.today(),
             )
+
             job_id = st.text_input("Job ID", value=str(selected.get("job_id") or ""))
-            category = st.text_input("Category", value=str(selected.get("category") or ""))
+
+            category = st.selectbox(
+                "Category",
+                CATEGORY_OPTIONS,
+                index=safe_select_index(CATEGORY_OPTIONS, selected.get("category")),
+            )
+
             job_status = st.selectbox(
                 "Job status",
-                ["Start", "Completed", "Aborted", "Paid", "Pending", "Withdraw"],
-                index=0,
+                JOB_STATUS_OPTIONS,
+                index=safe_select_index(JOB_STATUS_OPTIONS, selected.get("job_status")),
             )
+
             amount = st.number_input("Amount", value=float(selected.get("amount") or 0), step=0.01)
             waiting_time = st.text_input("Waiting time", value=str(selected.get("waiting_time") or ""))
             waiting_hours = st.number_input("Waiting hours", value=float(selected.get("waiting_hours") or 0), step=0.25)
@@ -212,8 +259,20 @@ with tab3:
             auth_code = st.text_input("Auth code", value=str(selected.get("auth_code") or ""))
             comments = st.text_area("Comments", value=str(selected.get("comments") or ""))
             add_pay = st.number_input("Additional pay", value=float(selected.get("add_pay") or 0), step=0.01)
-            paid_date = st.text_input("Paid date YYYY-MM-DD", value=str(selected.get("paid_date") or ""))
-            job_outcome = st.text_input("Job outcome", value=str(selected.get("job_outcome") or ""))
+
+            current_paid_date = safe_date_value(selected.get("paid_date"))
+
+            paid_date = st.date_input(
+                "Paid date",
+                value=current_paid_date,
+                format="YYYY-MM-DD",
+            )
+
+            job_outcome = st.selectbox(
+                "Job outcome",
+                JOB_OUTCOME_OPTIONS,
+                index=safe_select_index(JOB_OUTCOME_OPTIONS, selected.get("job_outcome")),
+            )
 
             submitted = st.form_submit_button("Save changes")
 
@@ -236,7 +295,7 @@ with tab3:
                     "auth_code": auth_code or None,
                     "comments": comments or None,
                     "add_pay": add_pay,
-                    "paid_date": paid_date or None,
+                    "paid_date": str(paid_date) if paid_date else None,
                     "job_outcome": job_outcome,
                 }
 
@@ -257,11 +316,17 @@ with tab4:
     with st.form("add_job_form"):
         work_date = st.date_input("Work date", value=date.today())
         job_id = st.text_input("Job ID")
-        category = st.text_input("Category", value="STRD Trade Plate")
+
+        category = st.selectbox(
+            "Category",
+            CATEGORY_OPTIONS,
+        )
+
         job_status = st.selectbox(
             "Job status",
-            ["Start", "Completed", "Aborted", "Paid", "Pending", "Withdraw"],
+            JOB_STATUS_OPTIONS,
         )
+
         amount = st.number_input("Amount", min_value=0.0, step=0.01)
         waiting_time = st.text_input("Waiting time")
         waiting_hours = st.number_input("Waiting hours", min_value=0.0, step=0.25)
@@ -275,8 +340,17 @@ with tab4:
         auth_code = st.text_input("Auth code")
         comments = st.text_area("Comments")
         add_pay = st.number_input("Additional pay", min_value=0.0, step=0.01)
-        paid_date = st.text_input("Paid date YYYY-MM-DD")
-        job_outcome = st.text_input("Job outcome", value="Completed")
+
+        paid_date = st.date_input(
+            "Paid date",
+            value=None,
+            format="YYYY-MM-DD",
+        )
+
+        job_outcome = st.selectbox(
+            "Job outcome",
+            JOB_OUTCOME_OPTIONS,
+        )
 
         submitted = st.form_submit_button("Add job")
 
@@ -299,7 +373,7 @@ with tab4:
                 "auth_code": auth_code or None,
                 "comments": comments or None,
                 "add_pay": add_pay,
-                "paid_date": paid_date or None,
+                "paid_date": str(paid_date) if paid_date else None,
                 "job_outcome": job_outcome,
             }
 
