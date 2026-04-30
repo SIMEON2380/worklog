@@ -55,6 +55,14 @@ def safe_date_value(value):
     return parsed.date()
 
 
+def clean_text(value):
+    return str(value or "").strip().lower()
+
+
+def clean_postcode(value):
+    return str(value or "").replace(" ", "").strip().upper()
+
+
 def fetch_jobs():
     url = f"{API_URL}/jobs"
     params = {"all_records": "true", "limit": 5000}
@@ -155,10 +163,62 @@ with tab1:
     )
 
     day_df = daily[daily["report_date"] == selected_date].copy()
+    history_df = daily[daily["report_date"] < selected_date].copy()
+
+    def has_seen_postcode_before(row):
+        collection = clean_postcode(row.get("collection_from"))
+        delivery = clean_postcode(row.get("delivery_to"))
+
+        if history_df.empty:
+            return "No"
+
+        history_collection = (
+            history_df["collection_from"]
+            .astype(str)
+            .str.replace(" ", "", regex=False)
+            .str.upper()
+        )
+
+        history_delivery = (
+            history_df["delivery_to"]
+            .astype(str)
+            .str.replace(" ", "", regex=False)
+            .str.upper()
+        )
+
+        found_collection = bool(collection) and (
+            history_collection.str.contains(collection, na=False).any()
+            or history_delivery.str.contains(collection, na=False).any()
+        )
+
+        found_delivery = bool(delivery) and (
+            history_collection.str.contains(delivery, na=False).any()
+            or history_delivery.str.contains(delivery, na=False).any()
+        )
+
+        return "Yes" if found_collection or found_delivery else "No"
+
+    def has_driven_vehicle_before(row):
+        vehicle = clean_text(row.get("vehicle_description"))
+
+        if not vehicle or history_df.empty:
+            return "No"
+
+        history_vehicles = (
+            history_df["vehicle_description"]
+            .astype(str)
+            .str.lower()
+            .str.strip()
+        )
+
+        return "Yes" if history_vehicles.str.contains(vehicle, na=False).any() else "No"
 
     if day_df.empty:
         st.warning("No jobs found for this date.")
     else:
+        day_df["postcode_before"] = day_df.apply(has_seen_postcode_before, axis=1)
+        day_df["vehicle_before"] = day_df.apply(has_driven_vehicle_before, axis=1)
+
         total_jobs = len(day_df)
         total_amount = day_df["amount"].sum()
         total_waiting = day_df["waiting_amount"].sum()
@@ -187,8 +247,10 @@ with tab1:
             "net_total",
             "vehicle_reg",
             "vehicle_description",
+            "vehicle_before",
             "collection_from",
             "delivery_to",
+            "postcode_before",
             "job_outcome",
         ]
 
