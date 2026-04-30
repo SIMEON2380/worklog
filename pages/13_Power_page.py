@@ -515,33 +515,75 @@ with tab6:
     if postcode:
         postcode_df = df.copy()
 
-        postcode_df["collection_clean"] = postcode_df["collection_from"].astype(str).str.replace(" ", "", regex=False).str.upper()
-        postcode_df["delivery_clean"] = postcode_df["delivery_to"].astype(str).str.replace(" ", "", regex=False).str.upper()
+        postcode_df["collection_clean"] = (
+            postcode_df["collection_from"]
+            .astype(str)
+            .str.replace(" ", "", regex=False)
+            .str.upper()
+        )
+
+        postcode_df["delivery_clean"] = (
+            postcode_df["delivery_to"]
+            .astype(str)
+            .str.replace(" ", "", regex=False)
+            .str.upper()
+        )
 
         matches = postcode_df[
             postcode_df["collection_clean"].str.contains(postcode, na=False)
             | postcode_df["delivery_clean"].str.contains(postcode, na=False)
-        ]
+        ].copy()
 
         if matches.empty:
             st.warning("No, you have not been to this postcode before.")
         else:
-            st.success(f"Yes, you have been to this postcode {len(matches)} time(s).")
+            matches = matches.sort_values("work_date", ascending=False)
+
+            total_visits = len(matches)
+            last_seen = matches["work_date"].max().date()
+            vehicle_count = matches["vehicle_description"].nunique()
+
+            st.success(f"Yes, you have been to this postcode {total_visits} time(s).")
+
+            col1, col2, col3 = st.columns(3)
+            col1.metric("Times visited", total_visits)
+            col2.metric("Last seen", str(last_seen))
+            col3.metric("Different vehicles", vehicle_count)
+
+            vehicle_summary = (
+                matches.groupby("vehicle_description")
+                .agg(
+                    times_driven=("id", "count"),
+                    last_seen=("work_date", "max"),
+                )
+                .reset_index()
+                .sort_values("times_driven", ascending=False)
+            )
+
+            vehicle_summary["last_seen"] = vehicle_summary["last_seen"].dt.date
+
+            st.subheader("Vehicle history for this postcode")
+            st.dataframe(vehicle_summary, use_container_width=True)
+
+            st.subheader("Matching jobs")
+
+            display_cols = [
+                "work_date",
+                "job_id",
+                "vehicle_reg",
+                "vehicle_description",
+                "collection_from",
+                "delivery_to",
+                "amount",
+                "waiting_amount",
+                "net_total",
+                "job_status",
+                "job_outcome",
+            ]
+
+            available_cols = [col for col in display_cols if col in matches.columns]
+
             st.dataframe(
-                matches[
-                    [
-                        "work_date",
-                        "job_id",
-                        "vehicle_reg",
-                        "vehicle_description",
-                        "collection_from",
-                        "delivery_to",
-                        "amount",
-                        "waiting_amount",
-                        "net_total",
-                        "job_status",
-                        "job_outcome",
-                    ]
-                ],
+                matches[available_cols],
                 use_container_width=True,
             )
