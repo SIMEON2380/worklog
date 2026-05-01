@@ -80,13 +80,22 @@ if st.session_state.clear_edit_form_after_save:
     st.session_state.clear_edit_form_after_save = False
 
 
-def load_jobs_df() -> pd.DataFrame:
+def load_jobs_df(search: str = "") -> pd.DataFrame:
+    params = {
+        "page": 1,
+        "page_size": 200,
+    }
+
+    if search.strip():
+        params["search"] = search.strip()
+
     res = requests.get(
         f"{API_URL}/jobs",
         headers={"x-api-key": API_KEY},
-        params={"page": 1, "page_size": 200},
+        params=params,
         timeout=20,
     )
+
     res.raise_for_status()
     payload = res.json()
 
@@ -102,8 +111,17 @@ def load_jobs_df() -> pd.DataFrame:
     return pd.DataFrame()
 
 
+left, right = st.columns([2, 3])
+
+job_search = left.text_input(
+    "Search by Job Number / Vehicle Reg / Location / Comments / Auth Code",
+    key="edit_job_search",
+)
+
+left.caption("Search uses the API directly, so older jobs can still be found without loading every record.")
+
 try:
-    df = load_jobs_df().copy()
+    df = load_jobs_df(job_search).copy()
 except requests.exceptions.ConnectionError:
     st.error(f"Could not connect to API at {API_URL}")
     st.stop()
@@ -115,7 +133,10 @@ except Exception as e:
     st.stop()
 
 if df.empty:
-    st.info("No jobs found.")
+    if job_search.strip():
+        st.warning("No matching jobs found.")
+    else:
+        st.info("No jobs found.")
     st.stop()
 
 if "id" not in df.columns:
@@ -131,31 +152,6 @@ if "paid_date" in df.columns:
 STATUS_COL = "job_status" if "job_status" in df.columns else ("status" if "status" in df.columns else None)
 OUTCOME_OPTIONS = ["Completed", "Aborted", "Withdraw", "Fail"]
 
-left, right = st.columns([2, 3])
-
-job_search = left.text_input(
-    "Search by Job Number / Vehicle Reg (optional)",
-    key="edit_job_search",
-)
-
-filtered = df.copy()
-
-if job_search.strip():
-    s = job_search.strip().lower()
-    mask = pd.Series(False, index=filtered.index)
-
-    if "job_id" in filtered.columns:
-        mask = mask | filtered["job_id"].astype(str).str.lower().str.contains(s, na=False)
-
-    if "vehicle_reg" in filtered.columns:
-        mask = mask | filtered["vehicle_reg"].astype(str).str.lower().str.contains(s, na=False)
-
-    filtered = filtered[mask]
-
-if filtered.empty:
-    st.warning("No matching jobs.")
-    st.stop()
-
 
 def label_row(r) -> str:
     jid = str(r.get("job_id", "") or "")
@@ -165,7 +161,7 @@ def label_row(r) -> str:
     return f"#{int(r['id'])} | {jid} | {vreg} | {d}"
 
 
-rows = filtered.sort_values(by="id", ascending=False).to_dict("records")
+rows = df.sort_values(by="id", ascending=False).to_dict("records")
 labels = [label_row(r) for r in rows]
 
 options = [None] + list(range(len(rows)))
@@ -199,12 +195,22 @@ with st.form("edit_job_form"):
     job_type = col3.selectbox(
         "Job Type",
         cfg.JOB_TYPE_OPTIONS,
-        index=(cfg.JOB_TYPE_OPTIONS.index(job.get("category")) if job.get("category") in cfg.JOB_TYPE_OPTIONS else 0),
+        index=(
+            cfg.JOB_TYPE_OPTIONS.index(job.get("category"))
+            if job.get("category") in cfg.JOB_TYPE_OPTIONS
+            else 0
+        ),
     )
 
     col4, col5, col6 = st.columns(3)
-    vehicle_description = col4.text_input("Vehicle Description", value=str(job.get("vehicle_description") or ""))
-    vehicle_reg = col5.text_input("Vehicle Reg", value=str(job.get("vehicle_reg") or ""))
+    vehicle_description = col4.text_input(
+        "Vehicle Description",
+        value=str(job.get("vehicle_description") or ""),
+    )
+    vehicle_reg = col5.text_input(
+        "Vehicle Reg",
+        value=str(job.get("vehicle_reg") or ""),
+    )
 
     current_outcome = str(job.get("job_outcome") or "Completed")
     if current_outcome not in OUTCOME_OPTIONS:
@@ -217,14 +223,24 @@ with st.form("edit_job_form"):
     )
 
     col7, col8, col9 = st.columns(3)
-    collection_from = col7.text_input("Collection From", value=str(job.get("collection_from") or ""))
-    delivery_to = col8.text_input("Delivery To", value=str(job.get("delivery_to") or ""))
+    collection_from = col7.text_input(
+        "Collection From",
+        value=str(job.get("collection_from") or ""),
+    )
+    delivery_to = col8.text_input(
+        "Delivery To",
+        value=str(job.get("delivery_to") or ""),
+    )
 
     current_status = str(job.get(STATUS_COL) or "Pending") if STATUS_COL else "Pending"
     job_status = col9.selectbox(
         "Job Status",
         cfg.STATUS_OPTIONS,
-        index=(cfg.STATUS_OPTIONS.index(current_status) if current_status in cfg.STATUS_OPTIONS else 0),
+        index=(
+            cfg.STATUS_OPTIONS.index(current_status)
+            if current_status in cfg.STATUS_OPTIONS
+            else 0
+        ),
     )
 
     col10, col11, col12 = st.columns(3)
@@ -237,7 +253,11 @@ with st.form("edit_job_form"):
     job_expenses = col11.selectbox(
         "Job Expenses",
         cfg.JOB_EXPENSE_OPTIONS,
-        index=(cfg.JOB_EXPENSE_OPTIONS.index(job.get("job_expenses")) if job.get("job_expenses") in cfg.JOB_EXPENSE_OPTIONS else 0),
+        index=(
+            cfg.JOB_EXPENSE_OPTIONS.index(job.get("job_expenses"))
+            if job.get("job_expenses") in cfg.JOB_EXPENSE_OPTIONS
+            else 0
+        ),
     )
     expenses_amount = col12.number_input(
         "Expenses Amount (£)",
@@ -253,7 +273,10 @@ with st.form("edit_job_form"):
     )
 
     calc_waiting_hours = float(parse_wait_range_to_hours(waiting_time))
-    calc_waiting_amount = round(float(calc_waiting_hours) * float(getattr(cfg, "WAITING_RATE", 0.0)), 2)
+    calc_waiting_amount = round(
+        float(calc_waiting_hours) * float(getattr(cfg, "WAITING_RATE", 0.0)),
+        2,
+    )
 
     col14.number_input(
         "Waiting Hours (auto)",
@@ -333,6 +356,7 @@ with st.form("edit_job_form"):
 
             if old_is_na and new_is_na:
                 return
+
             if old_cmp == new_cmp:
                 return
 
@@ -342,7 +366,10 @@ with st.form("edit_job_form"):
         set_if_changed("job_id", clean_text(job_number))
         set_if_changed("category", job_type)
         set_if_changed("vehicle_description", clean_text(vehicle_description))
-        set_if_changed("vehicle_reg", clean_text(vehicle_reg).upper() if clean_text(vehicle_reg) else None)
+
+        cleaned_reg = clean_text(vehicle_reg)
+        set_if_changed("vehicle_reg", cleaned_reg.upper() if cleaned_reg else None)
+
         set_if_changed("job_outcome", job_outcome)
         set_if_changed("collection_from", clean_text(collection_from))
         set_if_changed("delivery_to", clean_text(delivery_to))
@@ -361,7 +388,10 @@ with st.form("edit_job_form"):
 
         if "paid_date" in df.columns:
             if str(job_status).strip().lower() == "paid":
-                set_if_changed("paid_date", paid_date.isoformat() if paid_date else date.today().isoformat())
+                set_if_changed(
+                    "paid_date",
+                    paid_date.isoformat() if paid_date else date.today().isoformat(),
+                )
             else:
                 set_if_changed("paid_date", None)
 

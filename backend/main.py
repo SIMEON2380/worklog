@@ -81,25 +81,34 @@ def get_jobs(
     x_api_key: str | None = Header(default=None),
     work_date: Optional[str] = Query(default=None),
     job_status: Optional[str] = Query(default=None),
+    job_outcome: Optional[str] = Query(default=None),
     category: Optional[str] = Query(default=None),
-    limit: int = Query(default=50, ge=1, le=5000),
+    search: Optional[str] = Query(default=None),
+    start_date: Optional[str] = Query(default=None),
+    end_date: Optional[str] = Query(default=None),
+    limit: Optional[int] = Query(default=None, ge=1, le=5000),
     page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=50, ge=1, le=500),
     all_records: bool = Query(default=False),
 ):
     verify_api_key(x_api_key)
+
     try:
         return services.list_jobs(
             work_date=work_date,
             job_status=job_status,
+            job_outcome=job_outcome,
             category=category,
+            search=search,
+            start_date=start_date,
+            end_date=end_date,
             limit=limit,
             page=page,
+            page_size=page_size,
             all_records=all_records,
         )
     except HTTPException:
         raise
-    except TypeError:
-        return services.list_jobs()
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
