@@ -1,3 +1,4 @@
+import json
 import os
 from datetime import date
 
@@ -69,19 +70,21 @@ def ensure_column(df, column, default_value=""):
     return df
 
 
+def parse_json_if_needed(value):
+    if isinstance(value, str):
+        value = value.strip()
+
+        if value.startswith("{") and value.endswith("}"):
+            try:
+                return json.loads(value)
+            except json.JSONDecodeError:
+                return value
+
+    return value
+
+
 def extract_rows_from_payload(payload):
-    """
-    Handles these API shapes:
-
-    1. List:
-       [{...}, {...}]
-
-    2. Normal paginated:
-       {"data": [{...}, {...}], "count": 10}
-
-    3. Nested paginated:
-       {"data": {"data": [{...}, {...}], "count": 10}, "page": 1}
-    """
+    payload = parse_json_if_needed(payload)
 
     if isinstance(payload, list):
         return payload
@@ -89,21 +92,39 @@ def extract_rows_from_payload(payload):
     if not isinstance(payload, dict):
         return []
 
-    outer_data = payload.get("data")
+    for key in ["data", "items", "results", "rows"]:
+        value = payload.get(key)
 
-    if isinstance(outer_data, dict):
-        inner_data = outer_data.get("data")
-        if isinstance(inner_data, list):
-            return inner_data
+        value = parse_json_if_needed(value)
 
-    if isinstance(outer_data, list):
-        return outer_data
+        if isinstance(value, list):
+            return value
 
-    items = payload.get("items")
-    if isinstance(items, list):
-        return items
+        if isinstance(value, dict):
+            nested_rows = extract_rows_from_payload(value)
+            if nested_rows:
+                return nested_rows
 
     return []
+
+
+def normalise_rows(rows):
+    normalised = []
+
+    for row in rows:
+        row = parse_json_if_needed(row)
+
+        if isinstance(row, dict) and "data" in row:
+            inner = parse_json_if_needed(row.get("data"))
+
+            if isinstance(inner, dict):
+                normalised.append(inner)
+                continue
+
+        if isinstance(row, dict):
+            normalised.append(row)
+
+    return normalised
 
 
 def fetch_jobs():
@@ -126,11 +147,16 @@ def fetch_jobs():
 
     payload = response.json()
     rows = extract_rows_from_payload(payload)
+    rows = normalise_rows(rows)
 
     df = pd.DataFrame(rows)
 
     if df.empty:
         return df
+
+    if "work_date" not in df.columns and "data" in df.columns:
+        parsed_rows = normalise_rows(df["data"].tolist())
+        df = pd.DataFrame(parsed_rows)
 
     if "work_date" not in df.columns:
         st.error("API response does not include 'work_date'.")
@@ -175,6 +201,7 @@ def fetch_jobs():
     for col in money_cols:
         if col not in df.columns:
             df[col] = 0
+
         df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
 
     df["gross_total"] = df["amount"] + df["waiting_amount"] + df["add_pay"]
