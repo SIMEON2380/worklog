@@ -1,3 +1,4 @@
+import json
 import os
 from datetime import date, timedelta
 
@@ -9,6 +10,7 @@ from worklog.auth import ensure_default_user
 from worklog.config import Config
 from worklog.reporting import compute_totals, format_week_range
 from worklog.ui import require_login, display_jobs_table
+
 
 API_URL = os.getenv("WORKLOG_API_URL", "http://127.0.0.1:8000").rstrip("/")
 API_KEY = os.getenv("WORKLOG_API_KEY", "")
@@ -23,27 +25,81 @@ require_login()
 st.subheader("Weekly Report")
 
 
-def fetch_jobs(params=None) -> list:
-    response = requests.get(
-        f"{API_URL}/jobs",
-        headers={"x-api-key": API_KEY},
-        params=params,
-        timeout=15,
-    )
-    response.raise_for_status()
+def parse_json_if_needed(value):
+    if isinstance(value, str):
+        value = value.strip()
 
-    payload = response.json()
+        if value.startswith("{") and value.endswith("}"):
+            try:
+                return json.loads(value)
+            except json.JSONDecodeError:
+                return value
 
-    if isinstance(payload, dict) and "items" in payload:
-        return payload["items"]
+    return value
 
-    if isinstance(payload, dict) and "data" in payload:
-        return payload["data"]
+
+def extract_rows_from_payload(payload):
+    payload = parse_json_if_needed(payload)
 
     if isinstance(payload, list):
         return payload
 
-    raise ValueError("Unexpected API response format")
+    if not isinstance(payload, dict):
+        return []
+
+    for key in ["data", "items", "results", "rows"]:
+        value = parse_json_if_needed(payload.get(key))
+
+        if isinstance(value, list):
+            return value
+
+        if isinstance(value, dict):
+            nested = extract_rows_from_payload(value)
+            if nested:
+                return nested
+
+    return []
+
+
+def normalise_rows(rows):
+    normalised = []
+
+    for row in rows:
+        row = parse_json_if_needed(row)
+
+        if isinstance(row, dict) and "data" in row:
+            inner = parse_json_if_needed(row.get("data"))
+
+            if isinstance(inner, dict):
+                normalised.append(inner)
+                continue
+
+        if isinstance(row, dict):
+            normalised.append(row)
+
+    return normalised
+
+
+def fetch_jobs(params=None) -> list:
+    request_params = {"all_records": "true", "limit": 5000}
+
+    if params:
+        request_params.update(params)
+
+    response = requests.get(
+        f"{API_URL}/jobs",
+        headers={"x-api-key": API_KEY},
+        params=request_params,
+        timeout=20,
+    )
+
+    response.raise_for_status()
+
+    payload = response.json()
+    records = extract_rows_from_payload(payload)
+    records = normalise_rows(records)
+
+    return records
 
 
 def normalize_jobs(frame: pd.DataFrame) -> pd.DataFrame:
@@ -52,9 +108,14 @@ def normalize_jobs(frame: pd.DataFrame) -> pd.DataFrame:
 
     df = frame.copy()
 
+    if "work_date" not in df.columns and "data" in df.columns:
+        parsed_rows = normalise_rows(df["data"].tolist())
+        df = pd.DataFrame(parsed_rows)
+
     for col in ["amount", "waiting_hours", "waiting_amount", "expenses_amount", "add_pay"]:
         if col not in df.columns:
             df[col] = 0.0
+
         df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0.0)
 
     if "job_status" not in df.columns:
@@ -179,13 +240,16 @@ except Exception as e:
     st.error(f"Failed to load jobs from API: {e}")
     st.stop()
 
+
 c1, c2, c3, c4 = st.columns(4)
+
 c1.metric("Job Amount", f"£{t.total_job_amount:,.2f}")
 c2.metric("Waiting Pay", f"£{t.total_wait_amount:,.2f}")
 c3.metric("Add-Pay", f"£{t.total_add_pay:,.2f}")
 c4.metric("Driver Pay Estimate", f"£{t.driver_pay:,.2f}")
 
 c5, c6, c7, c8 = st.columns(4)
+
 c5.metric("Waiting Hours", f"{t.total_wait_hours:,.2f} hrs")
 c6.metric("Expenses (Reimbursed)", f"£{t.total_expenses:,.2f}")
 c7.metric("Total Received", f"£{t.total_received:,.2f}")
