@@ -69,6 +69,43 @@ def ensure_column(df, column, default_value=""):
     return df
 
 
+def extract_rows_from_payload(payload):
+    """
+    Handles these API shapes:
+
+    1. List:
+       [{...}, {...}]
+
+    2. Normal paginated:
+       {"data": [{...}, {...}], "count": 10}
+
+    3. Nested paginated:
+       {"data": {"data": [{...}, {...}], "count": 10}, "page": 1}
+    """
+
+    if isinstance(payload, list):
+        return payload
+
+    if not isinstance(payload, dict):
+        return []
+
+    outer_data = payload.get("data")
+
+    if isinstance(outer_data, dict):
+        inner_data = outer_data.get("data")
+        if isinstance(inner_data, list):
+            return inner_data
+
+    if isinstance(outer_data, list):
+        return outer_data
+
+    items = payload.get("items")
+    if isinstance(items, list):
+        return items
+
+    return []
+
+
 def fetch_jobs():
     url = f"{API_URL}/jobs"
     params = {"all_records": "true", "limit": 5000}
@@ -88,13 +125,7 @@ def fetch_jobs():
         return pd.DataFrame()
 
     payload = response.json()
-
-    if isinstance(payload, dict):
-        rows = payload.get("data") or payload.get("items") or []
-    elif isinstance(payload, list):
-        rows = payload
-    else:
-        rows = []
+    rows = extract_rows_from_payload(payload)
 
     df = pd.DataFrame(rows)
 
@@ -614,7 +645,4 @@ with tab6:
 
             available_cols = [col for col in display_cols if col in matches.columns]
 
-            st.dataframe(
-                matches[available_cols],
-                use_container_width=True,
-            )
+            st.dataframe(matches[available_cols], use_container_width=True)
