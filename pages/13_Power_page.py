@@ -63,10 +63,21 @@ def clean_postcode(value):
     return str(value or "").replace(" ", "").strip().upper()
 
 
+def ensure_column(df, column, default_value=""):
+    if column not in df.columns:
+        df[column] = default_value
+    return df
+
+
 def fetch_jobs():
     url = f"{API_URL}/jobs"
     params = {"all_records": "true", "limit": 5000}
-    response = requests.get(url, headers=HEADERS, params=params, timeout=20)
+
+    try:
+        response = requests.get(url, headers=HEADERS, params=params, timeout=20)
+    except requests.RequestException as e:
+        st.error(f"API connection failed: {e}")
+        return pd.DataFrame()
 
     if response.status_code == 401:
         st.error("API key rejected. Check WORKLOG_API_KEY in worklog.service.")
@@ -79,16 +90,48 @@ def fetch_jobs():
     payload = response.json()
 
     if isinstance(payload, dict):
-        rows = payload.get("data", payload.get("items", []))
-    else:
+        rows = payload.get("data") or payload.get("items") or []
+    elif isinstance(payload, list):
         rows = payload
+    else:
+        rows = []
 
     df = pd.DataFrame(rows)
 
     if df.empty:
         return df
 
+    if "work_date" not in df.columns:
+        st.error("API response does not include 'work_date'.")
+        st.write("API payload preview:")
+        st.json(payload)
+        st.dataframe(df.head(10))
+        return pd.DataFrame()
+
+    required_text_cols = [
+        "job_id",
+        "category",
+        "job_status",
+        "waiting_time",
+        "vehicle_description",
+        "vehicle_reg",
+        "collection_from",
+        "delivery_to",
+        "job_expenses",
+        "auth_code",
+        "comments",
+        "paid_date",
+        "job_outcome",
+    ]
+
+    for col in required_text_cols:
+        df = ensure_column(df, col, "")
+
+    if "id" not in df.columns:
+        df["id"] = range(1, len(df) + 1)
+
     df["work_date"] = pd.to_datetime(df["work_date"], errors="coerce")
+    df["paid_date"] = pd.to_datetime(df["paid_date"], errors="coerce")
 
     money_cols = [
         "amount",
@@ -99,16 +142,12 @@ def fetch_jobs():
     ]
 
     for col in money_cols:
-        if col in df.columns:
-            df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
+        if col not in df.columns:
+            df[col] = 0
+        df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
 
-    df["gross_total"] = (
-        df.get("amount", 0)
-        + df.get("waiting_amount", 0)
-        + df.get("add_pay", 0)
-    )
-
-    df["net_total"] = df["gross_total"] - df.get("expenses_amount", 0)
+    df["gross_total"] = df["amount"] + df["waiting_amount"] + df["add_pay"]
+    df["net_total"] = df["gross_total"] - df["expenses_amount"]
 
     return df
 
@@ -187,13 +226,13 @@ with tab1:
         )
 
         found_collection = bool(collection) and (
-            history_collection.str.contains(collection, na=False).any()
-            or history_delivery.str.contains(collection, na=False).any()
+            history_collection.str.contains(collection, na=False, regex=False).any()
+            or history_delivery.str.contains(collection, na=False, regex=False).any()
         )
 
         found_delivery = bool(delivery) and (
-            history_collection.str.contains(delivery, na=False).any()
-            or history_delivery.str.contains(delivery, na=False).any()
+            history_collection.str.contains(delivery, na=False, regex=False).any()
+            or history_delivery.str.contains(delivery, na=False, regex=False).any()
         )
 
         return "Yes" if found_collection or found_delivery else "No"
@@ -211,7 +250,7 @@ with tab1:
             .str.strip()
         )
 
-        return "Yes" if history_vehicles.str.contains(vehicle, na=False).any() else "No"
+        return "Yes" if history_vehicles.str.contains(vehicle, na=False, regex=False).any() else "No"
 
     if day_df.empty:
         st.warning("No jobs found for this date.")
@@ -321,7 +360,7 @@ with tab4:
         search = search_text.strip().lower()
         edit_df = edit_df[
             edit_df.astype(str)
-            .apply(lambda row: row.str.lower().str.contains(search, na=False).any(), axis=1)
+            .apply(lambda row: row.str.lower().str.contains(search, na=False, regex=False).any(), axis=1)
         ]
 
     display_cols = [
@@ -338,7 +377,8 @@ with tab4:
         "job_outcome",
     ]
 
-    st.dataframe(edit_df[display_cols], use_container_width=True)
+    available_display_cols = [col for col in display_cols if col in edit_df.columns]
+    st.dataframe(edit_df[available_display_cols], use_container_width=True)
 
     row_ids = edit_df["id"].dropna().astype(int).tolist()
 
@@ -351,6 +391,7 @@ with tab4:
             work_date = st.date_input(
                 "Work date",
                 value=selected["work_date"].date() if pd.notna(selected["work_date"]) else date.today(),
+                format="YYYY-MM-DD",
             )
 
             job_id = st.text_input("Job ID", value=str(selected.get("job_id") or ""))
@@ -435,18 +476,11 @@ with tab5:
     st.subheader("Add new job")
 
     with st.form("add_job_form"):
-        work_date = st.date_input("Work date", value=date.today())
+        work_date = st.date_input("Work date", value=date.today(), format="YYYY-MM-DD")
         job_id = st.text_input("Job ID")
 
-        category = st.selectbox(
-            "Category",
-            CATEGORY_OPTIONS,
-        )
-
-        job_status = st.selectbox(
-            "Job status",
-            JOB_STATUS_OPTIONS,
-        )
+        category = st.selectbox("Category", CATEGORY_OPTIONS)
+        job_status = st.selectbox("Job status", JOB_STATUS_OPTIONS)
 
         amount = st.number_input("Amount", min_value=0.0, step=0.01)
         waiting_time = st.text_input("Waiting time")
@@ -468,10 +502,7 @@ with tab5:
             format="YYYY-MM-DD",
         )
 
-        job_outcome = st.selectbox(
-            "Job outcome",
-            JOB_OUTCOME_OPTIONS,
-        )
+        job_outcome = st.selectbox("Job outcome", JOB_OUTCOME_OPTIONS)
 
         submitted = st.form_submit_button("Add job")
 
@@ -530,8 +561,8 @@ with tab6:
         )
 
         matches = postcode_df[
-            postcode_df["collection_clean"].str.contains(postcode, na=False)
-            | postcode_df["delivery_clean"].str.contains(postcode, na=False)
+            postcode_df["collection_clean"].str.contains(postcode, na=False, regex=False)
+            | postcode_df["delivery_clean"].str.contains(postcode, na=False, regex=False)
         ].copy()
 
         if matches.empty:
