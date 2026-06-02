@@ -40,22 +40,33 @@ def get_status_col(frame: pd.DataFrame) -> str | None:
     return None
 
 
-def compute_pending_money(frame: pd.DataFrame) -> float:
-    if frame.empty:
-        return 0.0
-
+def add_payment_columns(frame: pd.DataFrame) -> pd.DataFrame:
     out = frame.copy()
+
     out["amount"] = safe_num(out["amount"]) if "amount" in out.columns else 0.0
     out["waiting_amount"] = safe_num(out["waiting_amount"]) if "waiting_amount" in out.columns else 0.0
     out["add_pay"] = safe_num(out["add_pay"]) if "add_pay" in out.columns else 0.0
     out["expenses_amount"] = safe_num(out["expenses_amount"]) if "expenses_amount" in out.columns else 0.0
 
-    total = (
-        float(out["amount"].sum())
-        + float(out["waiting_amount"].sum())
-        + float(out["add_pay"].sum())
-        - float(out["expenses_amount"].sum())
+    out["total_to_be_paid"] = (
+        out["amount"]
+        + out["waiting_amount"]
+        + out["expenses_amount"]
+        + out["add_pay"]
     )
+
+    out["gross_value"] = out["total_to_be_paid"]
+
+    return out
+
+
+def compute_total_to_be_paid(frame: pd.DataFrame) -> float:
+    if frame.empty:
+        return 0.0
+
+    out = add_payment_columns(frame)
+
+    total = float(out["total_to_be_paid"].sum())
     return round(total, 2)
 
 
@@ -181,11 +192,7 @@ if "work_date" in df.columns:
 if "id" not in df.columns:
     df["id"] = range(1, len(df) + 1)
 
-df["amount"] = safe_num(df["amount"]) if "amount" in df.columns else 0.0
-df["waiting_amount"] = safe_num(df["waiting_amount"]) if "waiting_amount" in df.columns else 0.0
-df["add_pay"] = safe_num(df["add_pay"]) if "add_pay" in df.columns else 0.0
-df["expenses_amount"] = safe_num(df["expenses_amount"]) if "expenses_amount" in df.columns else 0.0
-df["gross_value"] = df["amount"] + df["waiting_amount"] + df["add_pay"] - df["expenses_amount"]
+df = add_payment_columns(df)
 
 start_row = ((current_page_value - 1) * page_size_value) + 1 if total_rows > 0 else 0
 end_row = min(current_page_value * page_size_value, total_rows)
@@ -214,6 +221,7 @@ st.divider()
 
 paid_df = df[df[status_col].str.lower() == "paid"].copy()
 pending_df = df[df[status_col].str.lower() == "pending"].copy()
+start_df = df[df[status_col].str.lower() == "start"].copy()
 aborted_df = df[df["job_outcome"].str.lower() == "aborted"].copy()
 withdraw_df = df[df["job_outcome"].str.lower() == "withdraw"].copy()
 fail_df = df[df["job_outcome"].str.lower() == "fail"].copy()
@@ -222,15 +230,72 @@ aborted_paid_df = df[
     & (df[status_col].str.lower() == "paid")
 ].copy()
 
-pending_money = compute_pending_money(pending_df)
+selected_status_df = df.copy()
+if selected_api_status != "All":
+    selected_status_df = df[df[status_col].str.lower() == selected_api_status.lower()].copy()
+
+selected_status_total = compute_total_to_be_paid(selected_status_df)
+pending_money = compute_total_to_be_paid(pending_df)
+start_money = compute_total_to_be_paid(start_df)
 
 k1, k2, k3, k4, k5, k6 = st.columns(6)
 k1.metric("Page Jobs", int(len(df)))
 k2.metric("Paid", int(len(paid_df)))
 k3.metric("Pending", int(len(pending_df)))
-k4.metric("Aborted", int(len(aborted_df)))
-k5.metric("Withdraw", int(len(withdraw_df)))
-k6.metric("Pending £", f"£{pending_money:,.2f}")
+k4.metric("Start", int(len(start_df)))
+k5.metric("Start £", f"£{start_money:,.2f}")
+k6.metric("Selected Status £", f"£{selected_status_total:,.2f}")
+
+st.divider()
+
+st.markdown("### Selected Payment Status Total")
+
+s1, s2, s3, s4, s5 = st.columns(5)
+
+s1.metric("Selected Status", selected_api_status)
+s2.metric("Jobs", int(len(selected_status_df)))
+s3.metric("Job Amount", f"£{float(selected_status_df['amount'].sum()):,.2f}")
+s4.metric("Waiting + Expenses + Add Pay", f"£{float((selected_status_df['waiting_amount'] + selected_status_df['expenses_amount'] + selected_status_df['add_pay']).sum()):,.2f}")
+s5.metric("Total To Be Paid", f"£{selected_status_total:,.2f}")
+
+if selected_api_status != "All":
+    st.markdown(f"### Jobs With Status: {selected_api_status}")
+
+    show_cols = [
+        c for c in [
+            "work_date",
+            "job_id",
+            "vehicle_reg",
+            "vehicle_description",
+            "category",
+            "job_outcome",
+            status_col,
+            "amount",
+            "waiting_amount",
+            "expenses_amount",
+            "add_pay",
+            "total_to_be_paid",
+            "collection_from",
+            "delivery_to",
+        ]
+        if c in selected_status_df.columns
+    ]
+
+    status_temp = format_date_column(selected_status_df[show_cols].copy(), "work_date")
+
+    money_cols = [
+        "amount",
+        "waiting_amount",
+        "expenses_amount",
+        "add_pay",
+        "total_to_be_paid",
+    ]
+
+    for col in money_cols:
+        if col in status_temp.columns:
+            status_temp[col] = pd.to_numeric(status_temp[col], errors="coerce").fillna(0).round(2)
+
+    st.dataframe(status_temp, use_container_width=True, hide_index=True)
 
 st.divider()
 
@@ -242,12 +307,12 @@ with left:
         df.groupby(status_col, dropna=False)
         .agg(
             jobs=("id", "count"),
-            total_value=("gross_value", "sum"),
+            total_to_be_paid=("total_to_be_paid", "sum"),
         )
         .reset_index()
         .sort_values("jobs", ascending=False)
     )
-    payment_summary["total_value"] = payment_summary["total_value"].round(2)
+    payment_summary["total_to_be_paid"] = payment_summary["total_to_be_paid"].round(2)
     st.dataframe(payment_summary, use_container_width=True, hide_index=True)
 
 with right:
@@ -256,12 +321,12 @@ with right:
         df.groupby("job_outcome", dropna=False)
         .agg(
             jobs=("id", "count"),
-            total_value=("gross_value", "sum"),
+            total_to_be_paid=("total_to_be_paid", "sum"),
         )
         .reset_index()
         .sort_values("jobs", ascending=False)
     )
-    outcome_summary["total_value"] = outcome_summary["total_value"].round(2)
+    outcome_summary["total_to_be_paid"] = outcome_summary["total_to_be_paid"].round(2)
     st.dataframe(outcome_summary, use_container_width=True, hide_index=True)
 
 st.divider()
@@ -281,13 +346,13 @@ with a1:
                 "category",
                 "job_outcome",
                 status_col,
-                "gross_value",
+                "total_to_be_paid",
             ]
             if c in pending_df.columns
         ]
         temp = format_date_column(pending_df[show_cols].copy(), "work_date")
-        if "gross_value" in temp.columns:
-            temp["gross_value"] = pd.to_numeric(temp["gross_value"], errors="coerce").fillna(0).round(2)
+        if "total_to_be_paid" in temp.columns:
+            temp["total_to_be_paid"] = pd.to_numeric(temp["total_to_be_paid"], errors="coerce").fillna(0).round(2)
         st.dataframe(temp, use_container_width=True, hide_index=True)
 
 with a2:
@@ -303,13 +368,13 @@ with a2:
                 "category",
                 "job_outcome",
                 status_col,
-                "gross_value",
+                "total_to_be_paid",
             ]
             if c in aborted_paid_df.columns
         ]
         temp = format_date_column(aborted_paid_df[show_cols].copy(), "work_date")
-        if "gross_value" in temp.columns:
-            temp["gross_value"] = pd.to_numeric(temp["gross_value"], errors="coerce").fillna(0).round(2)
+        if "total_to_be_paid" in temp.columns:
+            temp["total_to_be_paid"] = pd.to_numeric(temp["total_to_be_paid"], errors="coerce").fillna(0).round(2)
         st.dataframe(temp, use_container_width=True, hide_index=True)
 
 b1, b2 = st.columns(2)
@@ -320,10 +385,20 @@ with b1:
         st.info("No withdraw jobs.")
     else:
         show_cols = [
-            c for c in ["work_date", "job_id", "vehicle_reg", "category", "job_outcome", status_col]
+            c for c in [
+                "work_date",
+                "job_id",
+                "vehicle_reg",
+                "category",
+                "job_outcome",
+                status_col,
+                "total_to_be_paid",
+            ]
             if c in withdraw_df.columns
         ]
         temp = format_date_column(withdraw_df[show_cols].copy(), "work_date")
+        if "total_to_be_paid" in temp.columns:
+            temp["total_to_be_paid"] = pd.to_numeric(temp["total_to_be_paid"], errors="coerce").fillna(0).round(2)
         st.dataframe(temp, use_container_width=True, hide_index=True)
 
 with b2:
@@ -332,10 +407,20 @@ with b2:
         st.info("No failed jobs.")
     else:
         show_cols = [
-            c for c in ["work_date", "job_id", "vehicle_reg", "category", "job_outcome", status_col]
+            c for c in [
+                "work_date",
+                "job_id",
+                "vehicle_reg",
+                "category",
+                "job_outcome",
+                status_col,
+                "total_to_be_paid",
+            ]
             if c in fail_df.columns
         ]
         temp = format_date_column(fail_df[show_cols].copy(), "work_date")
+        if "total_to_be_paid" in temp.columns:
+            temp["total_to_be_paid"] = pd.to_numeric(temp["total_to_be_paid"], errors="coerce").fillna(0).round(2)
         st.dataframe(temp, use_container_width=True, hide_index=True)
 
 st.divider()
@@ -376,15 +461,15 @@ if "work_date" in df.columns:
                         "category",
                         "job_outcome",
                         status_col,
-                        "gross_value",
+                        "total_to_be_paid",
                         "days_pending",
                     ]
                     if c in pending_7.columns
                 ]
                 temp7 = pending_7[show_cols].copy().sort_values("days_pending", ascending=False)
                 temp7 = format_date_column(temp7, "work_date")
-                if "gross_value" in temp7.columns:
-                    temp7["gross_value"] = pd.to_numeric(temp7["gross_value"], errors="coerce").fillna(0).round(2)
+                if "total_to_be_paid" in temp7.columns:
+                    temp7["total_to_be_paid"] = pd.to_numeric(temp7["total_to_be_paid"], errors="coerce").fillna(0).round(2)
                 st.dataframe(temp7, use_container_width=True, hide_index=True)
 
         with x2:
@@ -400,15 +485,15 @@ if "work_date" in df.columns:
                         "category",
                         "job_outcome",
                         status_col,
-                        "gross_value",
+                        "total_to_be_paid",
                         "days_pending",
                     ]
                     if c in pending_14.columns
                 ]
                 temp14 = pending_14[show_cols].copy().sort_values("days_pending", ascending=False)
                 temp14 = format_date_column(temp14, "work_date")
-                if "gross_value" in temp14.columns:
-                    temp14["gross_value"] = pd.to_numeric(temp14["gross_value"], errors="coerce").fillna(0).round(2)
+                if "total_to_be_paid" in temp14.columns:
+                    temp14["total_to_be_paid"] = pd.to_numeric(temp14["total_to_be_paid"], errors="coerce").fillna(0).round(2)
                 st.dataframe(temp14, use_container_width=True, hide_index=True)
     else:
         st.info("No pending jobs with valid work dates found.")
