@@ -7,7 +7,7 @@ import requests
 import streamlit as st
 
 
-API_URL = os.getenv("WORKLOG_API_URL", "http://127.0.0.1:8000")
+API_URL = os.getenv("WORKLOG_API_URL", "http://127.0.0.1:8000").rstrip("/")
 API_KEY = os.getenv("WORKLOG_API_KEY", "")
 
 HEADERS = {"x-api-key": API_KEY}
@@ -34,6 +34,20 @@ JOB_OUTCOME_OPTIONS = [
     "Pending",
 ]
 
+EXPENSE_OPTIONS = [
+    "No expenses",
+    "Fuel",
+    "Train",
+    "Taxi",
+    "Bus",
+    "Parking",
+    "Toll",
+    "Hotel",
+    "Food",
+    "Other",
+]
+
+WAITING_RATE = float(os.getenv("WORKLOG_WAITING_RATE", "10"))
 
 st.set_page_config(page_title="Power Page", layout="wide")
 st.title("⚡ Power Page")
@@ -57,6 +71,11 @@ def safe_date_value(value):
 
 
 def clean_text(value):
+    value = str(value or "").strip()
+    return value if value else None
+
+
+def clean_lower(value):
     return str(value or "").strip().lower()
 
 
@@ -68,6 +87,86 @@ def ensure_column(df, column, default_value=""):
     if column not in df.columns:
         df[column] = default_value
     return df
+
+
+def parse_wait_range_to_hours(s: str) -> float:
+    if not s:
+        return 0.0
+
+    s = str(s).strip().replace(" ", "")
+
+    if "-" not in s:
+        return 0.0
+
+    start, end = s.split("-", 1)
+
+    def to_minutes(t: str) -> int:
+        if ":" in t:
+            hh, mm = t.split(":", 1)
+            return int(hh) * 60 + int(mm)
+        return int(t) * 60
+
+    try:
+        a = to_minutes(start)
+        b = to_minutes(end)
+
+        if b <= a:
+            return 0.0
+
+        return round((b - a) / 60.0, 2)
+    except Exception:
+        return 0.0
+
+
+def parse_expenses_for_edit(expense_text, fallback_amount=0.0):
+    if not expense_text or str(expense_text).strip().lower() == "no expenses":
+        return [{"type": "No expenses", "amount": 0.0}]
+
+    rows = []
+
+    for part in str(expense_text).split(";"):
+        part = part.strip()
+
+        if not part:
+            continue
+
+        if ":" in part:
+            expense_type, amount_text = part.split(":", 1)
+            expense_type = expense_type.strip()
+            amount_text = amount_text.replace("£", "").replace(",", "").strip()
+
+            try:
+                amount = float(amount_text)
+            except Exception:
+                amount = 0.0
+
+            rows.append({"type": expense_type, "amount": amount})
+
+    if not rows and float(fallback_amount or 0.0) > 0:
+        rows.append({"type": "Other", "amount": float(fallback_amount)})
+
+    return rows or [{"type": "No expenses", "amount": 0.0}]
+
+
+def build_expenses_from_rows(rows):
+    valid_rows = [
+        row
+        for row in rows
+        if row.get("type") != "No expenses" and float(row.get("amount") or 0.0) > 0
+    ]
+
+    total = round(sum(float(row["amount"]) for row in valid_rows), 2)
+
+    expense_text = (
+        "; ".join(
+            f"{row['type']}: £{float(row['amount']):.2f}"
+            for row in valid_rows
+        )
+        if valid_rows
+        else "No expenses"
+    )
+
+    return expense_text, total, valid_rows
 
 
 def parse_json_if_needed(value):
@@ -94,7 +193,6 @@ def extract_rows_from_payload(payload):
 
     for key in ["data", "items", "results", "rows"]:
         value = payload.get(key)
-
         value = parse_json_if_needed(value)
 
         if isinstance(value, list):
@@ -228,6 +326,46 @@ def api_put(path, payload):
     )
 
 
+def show_financial_summary(job_amount, waiting_amount, add_pay, expenses_amount, valid_expenses):
+    total_to_pay = round(
+        float(job_amount) + float(waiting_amount) + float(add_pay) - float(expenses_amount),
+        2,
+    )
+
+    with st.container(border=True):
+        st.markdown("### 📊 Financial Summary")
+
+        st.metric("Total To Pay", f"£{total_to_pay:,.2f}")
+
+        st.divider()
+
+        st.write(f"**Job Amount:** £{float(job_amount):,.2f}")
+        st.write(f"**Waiting Amount:** £{float(waiting_amount):,.2f}")
+        st.write(f"**Add Pay:** £{float(add_pay):,.2f}")
+        st.write(f"**Expenses:** £{float(expenses_amount):,.2f}")
+
+        st.divider()
+
+        if valid_expenses:
+            st.markdown("#### Expense Breakdown")
+            for row in valid_expenses:
+                st.write(f"- {row['type']}: £{float(row['amount']):,.2f}")
+        else:
+            st.caption("No expenses added.")
+
+    return total_to_pay
+
+
+if "power_add_expense_rows" not in st.session_state:
+    st.session_state.power_add_expense_rows = [{"type": "No expenses", "amount": 0.0}]
+
+if "power_edit_expense_rows" not in st.session_state:
+    st.session_state.power_edit_expense_rows = [{"type": "No expenses", "amount": 0.0}]
+
+if "power_edit_expense_row_id" not in st.session_state:
+    st.session_state.power_edit_expense_row_id = None
+
+
 df = fetch_jobs()
 
 if df.empty:
@@ -296,7 +434,7 @@ with tab1:
         return "Yes" if found_collection or found_delivery else "No"
 
     def has_driven_vehicle_before(row):
-        vehicle = clean_text(row.get("vehicle_description"))
+        vehicle = clean_lower(row.get("vehicle_description"))
 
         if not vehicle or history_df.empty:
             return "No"
@@ -408,7 +546,7 @@ with tab3:
 
 
 with tab4:
-    st.subheader("Edit job")
+    st.subheader("Edit Job")
 
     search_text = st.text_input("Search by job ID, vehicle reg, postcode, or vehicle description")
 
@@ -429,6 +567,8 @@ with tab4:
         "job_status",
         "amount",
         "waiting_amount",
+        "expenses_amount",
+        "net_total",
         "vehicle_reg",
         "collection_from",
         "delivery_to",
@@ -442,155 +582,482 @@ with tab4:
 
     if row_ids:
         selected_id = st.selectbox("Select row ID to edit", row_ids)
-
         selected = edit_df[edit_df["id"] == selected_id].iloc[0]
 
-        with st.form("edit_job_form"):
-            work_date = st.date_input(
-                "Work date",
-                value=selected["work_date"].date() if pd.notna(selected["work_date"]) else date.today(),
-                format="YYYY-MM-DD",
+        if st.session_state.power_edit_expense_row_id != selected_id:
+            st.session_state.power_edit_expense_rows = parse_expenses_for_edit(
+                selected.get("job_expenses"),
+                selected.get("expenses_amount") or 0.0,
             )
+            st.session_state.power_edit_expense_row_id = selected_id
 
-            job_id = st.text_input("Job ID", value=str(selected.get("job_id") or ""))
+        st.info(
+            f"Editing Row #{selected_id} | "
+            f"Job: {selected.get('job_id') or ''} | "
+            f"Vehicle: {selected.get('vehicle_reg') or ''}"
+        )
 
-            category = st.selectbox(
-                "Category",
-                CATEGORY_OPTIONS,
-                index=safe_select_index(CATEGORY_OPTIONS, selected.get("category")),
-            )
+        left_col, right_col = st.columns([2.2, 1])
 
-            job_status = st.selectbox(
-                "Job status",
-                JOB_STATUS_OPTIONS,
-                index=safe_select_index(JOB_STATUS_OPTIONS, selected.get("job_status")),
-            )
+        with left_col:
+            with st.container(border=True):
+                st.markdown("### 📋 Job Information")
 
-            amount = st.number_input("Amount", value=float(selected.get("amount") or 0), step=0.01)
-            waiting_time = st.text_input("Waiting time", value=str(selected.get("waiting_time") or ""))
-            waiting_hours = st.number_input("Waiting hours", value=float(selected.get("waiting_hours") or 0), step=0.25)
-            waiting_amount = st.number_input("Waiting amount", value=float(selected.get("waiting_amount") or 0), step=0.01)
-            vehicle_description = st.text_input("Vehicle description", value=str(selected.get("vehicle_description") or ""))
-            vehicle_reg = st.text_input("Vehicle reg", value=str(selected.get("vehicle_reg") or ""))
-            collection_from = st.text_input("Collection from", value=str(selected.get("collection_from") or ""))
-            delivery_to = st.text_input("Delivery to", value=str(selected.get("delivery_to") or ""))
-            job_expenses = st.text_input("Job expenses", value=str(selected.get("job_expenses") or "No expenses"))
-            expenses_amount = st.number_input("Expenses amount", value=float(selected.get("expenses_amount") or 0), step=0.01)
-            auth_code = st.text_input("Auth code", value=str(selected.get("auth_code") or ""))
-            comments = st.text_area("Comments", value=str(selected.get("comments") or ""))
-            add_pay = st.number_input("Additional pay", value=float(selected.get("add_pay") or 0), step=0.01)
+                col1, col2, col3 = st.columns(3)
 
-            current_paid_date = safe_date_value(selected.get("paid_date"))
+                edit_work_date = col1.date_input(
+                    "Work date",
+                    value=selected["work_date"].date() if pd.notna(selected["work_date"]) else date.today(),
+                    format="YYYY-MM-DD",
+                    key=f"edit_work_date_{selected_id}",
+                )
 
-            paid_date = st.date_input(
-                "Paid date",
-                value=current_paid_date,
-                format="YYYY-MM-DD",
-            )
+                edit_job_id = col2.text_input(
+                    "Job ID",
+                    value=str(selected.get("job_id") or ""),
+                    key=f"edit_job_id_{selected_id}",
+                )
 
-            job_outcome = st.selectbox(
-                "Job outcome",
-                JOB_OUTCOME_OPTIONS,
-                index=safe_select_index(JOB_OUTCOME_OPTIONS, selected.get("job_outcome")),
-            )
+                edit_category = col3.selectbox(
+                    "Category",
+                    CATEGORY_OPTIONS,
+                    index=safe_select_index(CATEGORY_OPTIONS, selected.get("category")),
+                    key=f"edit_category_{selected_id}",
+                )
 
-            submitted = st.form_submit_button("Save changes")
+                col4, col5 = st.columns(2)
 
-            if submitted:
-                payload = {
-                    "work_date": str(work_date),
-                    "job_id": job_id,
-                    "category": category,
-                    "job_status": job_status,
-                    "amount": amount,
-                    "waiting_time": waiting_time or None,
-                    "waiting_hours": waiting_hours,
-                    "waiting_amount": waiting_amount,
-                    "vehicle_description": vehicle_description,
-                    "vehicle_reg": vehicle_reg,
-                    "collection_from": collection_from,
-                    "delivery_to": delivery_to,
-                    "job_expenses": job_expenses,
-                    "expenses_amount": expenses_amount,
-                    "auth_code": auth_code or None,
-                    "comments": comments or None,
-                    "add_pay": add_pay,
-                    "paid_date": str(paid_date) if paid_date else None,
-                    "job_outcome": job_outcome,
-                }
+                edit_job_status = col4.selectbox(
+                    "Job status",
+                    JOB_STATUS_OPTIONS,
+                    index=safe_select_index(JOB_STATUS_OPTIONS, selected.get("job_status")),
+                    key=f"edit_job_status_{selected_id}",
+                )
 
-                res = api_put(f"/jobs/row/{selected_id}", payload)
+                edit_job_outcome = col5.selectbox(
+                    "Job outcome",
+                    JOB_OUTCOME_OPTIONS,
+                    index=safe_select_index(JOB_OUTCOME_OPTIONS, selected.get("job_outcome")),
+                    key=f"edit_job_outcome_{selected_id}",
+                )
 
-                if res.status_code in [200, 204]:
-                    st.success("Job updated successfully.")
+            with st.container(border=True):
+                st.markdown("### 🚗 Vehicle Details")
+
+                col1, col2 = st.columns(2)
+
+                edit_vehicle_description = col1.text_input(
+                    "Vehicle description",
+                    value=str(selected.get("vehicle_description") or ""),
+                    key=f"edit_vehicle_description_{selected_id}",
+                )
+
+                edit_vehicle_reg = col2.text_input(
+                    "Vehicle reg",
+                    value=str(selected.get("vehicle_reg") or ""),
+                    key=f"edit_vehicle_reg_{selected_id}",
+                )
+
+            with st.container(border=True):
+                st.markdown("### 📍 Journey")
+
+                col1, col2 = st.columns(2)
+
+                edit_collection_from = col1.text_input(
+                    "Collection from",
+                    value=str(selected.get("collection_from") or ""),
+                    key=f"edit_collection_from_{selected_id}",
+                )
+
+                edit_delivery_to = col2.text_input(
+                    "Delivery to",
+                    value=str(selected.get("delivery_to") or ""),
+                    key=f"edit_delivery_to_{selected_id}",
+                )
+
+            with st.container(border=True):
+                st.markdown("### 💰 Job Pay & Expenses")
+
+                edit_amount = st.number_input(
+                    "Amount (£)",
+                    min_value=0.0,
+                    value=float(selected.get("amount") or 0),
+                    step=0.01,
+                    key=f"edit_amount_{selected_id}",
+                )
+
+                st.markdown("#### Expenses")
+
+                for i, expense in enumerate(st.session_state.power_edit_expense_rows):
+                    exp_col1, exp_col2, exp_col3 = st.columns([2, 1, 0.7])
+
+                    expense_type = exp_col1.selectbox(
+                        f"Expense Type {i + 1}",
+                        EXPENSE_OPTIONS,
+                        index=safe_select_index(EXPENSE_OPTIONS, expense.get("type")),
+                        key=f"power_edit_expense_type_{selected_id}_{i}",
+                    )
+
+                    expense_amount = exp_col2.number_input(
+                        f"Amount {i + 1} (£)",
+                        min_value=0.0,
+                        value=float(expense.get("amount") or 0.0),
+                        step=0.5,
+                        key=f"power_edit_expense_amount_{selected_id}_{i}",
+                    )
+
+                    st.session_state.power_edit_expense_rows[i] = {
+                        "type": expense_type,
+                        "amount": float(expense_amount),
+                    }
+
+                    with exp_col3:
+                        st.write("")
+                        st.write("")
+                        if len(st.session_state.power_edit_expense_rows) > 1:
+                            if st.button("Remove", key=f"power_edit_remove_expense_{selected_id}_{i}"):
+                                st.session_state.power_edit_expense_rows.pop(i)
+                                st.rerun()
+
+                if st.button("➕ Add Another Expense", key=f"power_edit_add_expense_{selected_id}"):
+                    st.session_state.power_edit_expense_rows.append(
+                        {"type": "No expenses", "amount": 0.0}
+                    )
                     st.rerun()
-                else:
-                    st.error(f"Update failed: {res.status_code} - {res.text}")
+
+            edit_job_expenses, edit_expenses_amount, edit_valid_expenses = build_expenses_from_rows(
+                st.session_state.power_edit_expense_rows
+            )
+
+            with st.container(border=True):
+                st.markdown("### ⏱ Waiting Time")
+
+                col1, col2, col3 = st.columns(3)
+
+                edit_waiting_time = col1.text_input(
+                    "Waiting time",
+                    value=str(selected.get("waiting_time") or ""),
+                    placeholder="e.g. 10-11 or 09:00-11:30",
+                    key=f"edit_waiting_time_{selected_id}",
+                )
+
+                edit_waiting_hours = parse_wait_range_to_hours(edit_waiting_time)
+                edit_waiting_amount = round(edit_waiting_hours * WAITING_RATE, 2)
+
+                col2.metric("Waiting Hours", f"{edit_waiting_hours:.2f}")
+                col3.metric("Waiting Amount", f"£{edit_waiting_amount:.2f}")
+
+            with st.container(border=True):
+                st.markdown("### 📝 Extra Details")
+
+                col1, col2 = st.columns(2)
+
+                edit_add_pay = col1.number_input(
+                    "Additional pay (£)",
+                    min_value=0.0,
+                    value=float(selected.get("add_pay") or 0),
+                    step=0.01,
+                    key=f"edit_add_pay_{selected_id}",
+                )
+
+                current_paid_date = safe_date_value(selected.get("paid_date"))
+
+                edit_paid_date = col2.date_input(
+                    "Paid date",
+                    value=current_paid_date,
+                    format="YYYY-MM-DD",
+                    key=f"edit_paid_date_{selected_id}",
+                )
+
+                edit_auth_code = st.text_input(
+                    "Auth code",
+                    value=str(selected.get("auth_code") or ""),
+                    key=f"edit_auth_code_{selected_id}",
+                )
+
+                edit_comments = st.text_area(
+                    "Comments",
+                    value=str(selected.get("comments") or ""),
+                    key=f"edit_comments_{selected_id}",
+                )
+
+        with right_col:
+            show_financial_summary(
+                edit_amount,
+                edit_waiting_amount,
+                edit_add_pay,
+                edit_expenses_amount,
+                edit_valid_expenses,
+            )
+
+            submitted = st.button(
+                "💾 Update Job",
+                type="primary",
+                use_container_width=True,
+                key=f"power_update_job_{selected_id}",
+            )
+
+        if submitted:
+            payload = {
+                "work_date": str(edit_work_date),
+                "job_id": edit_job_id,
+                "category": edit_category,
+                "job_status": edit_job_status,
+                "amount": float(edit_amount),
+                "waiting_time": edit_waiting_time or None,
+                "waiting_hours": float(edit_waiting_hours),
+                "waiting_amount": float(edit_waiting_amount),
+                "vehicle_description": edit_vehicle_description,
+                "vehicle_reg": edit_vehicle_reg.upper().strip() if edit_vehicle_reg else None,
+                "collection_from": edit_collection_from,
+                "delivery_to": edit_delivery_to,
+                "job_expenses": edit_job_expenses,
+                "expenses_amount": float(edit_expenses_amount),
+                "auth_code": edit_auth_code or None,
+                "comments": edit_comments or None,
+                "add_pay": float(edit_add_pay),
+                "paid_date": str(edit_paid_date) if edit_paid_date else None,
+                "job_outcome": edit_job_outcome,
+            }
+
+            res = api_put(f"/jobs/row/{selected_id}", payload)
+
+            if res.status_code in [200, 204]:
+                st.success("Job updated successfully.")
+                st.rerun()
+            else:
+                st.error(f"Update failed: {res.status_code} - {res.text}")
     else:
         st.info("No matching jobs found.")
 
 
 with tab5:
-    st.subheader("Add new job")
+    st.subheader("Add New Job")
 
-    with st.form("add_job_form"):
-        work_date = st.date_input("Work date", value=date.today(), format="YYYY-MM-DD")
-        job_id = st.text_input("Job ID")
+    left_col, right_col = st.columns([2.2, 1])
 
-        category = st.selectbox("Category", CATEGORY_OPTIONS)
-        job_status = st.selectbox("Job status", JOB_STATUS_OPTIONS)
+    with left_col:
+        with st.container(border=True):
+            st.markdown("### 📋 Job Information")
 
-        amount = st.number_input("Amount", min_value=0.0, step=0.01)
-        waiting_time = st.text_input("Waiting time")
-        waiting_hours = st.number_input("Waiting hours", min_value=0.0, step=0.25)
-        waiting_amount = st.number_input("Waiting amount", min_value=0.0, step=0.01)
-        vehicle_description = st.text_input("Vehicle description")
-        vehicle_reg = st.text_input("Vehicle reg")
-        collection_from = st.text_input("Collection from")
-        delivery_to = st.text_input("Delivery to")
-        job_expenses = st.text_input("Job expenses", value="No expenses")
-        expenses_amount = st.number_input("Expenses amount", min_value=0.0, step=0.01)
-        auth_code = st.text_input("Auth code")
-        comments = st.text_area("Comments")
-        add_pay = st.number_input("Additional pay", min_value=0.0, step=0.01)
+            col1, col2, col3 = st.columns(3)
 
-        paid_date = st.date_input(
-            "Paid date",
-            value=None,
-            format="YYYY-MM-DD",
+            add_work_date = col1.date_input(
+                "Work date",
+                value=date.today(),
+                format="YYYY-MM-DD",
+                key="power_add_work_date",
+            )
+
+            add_job_id = col2.text_input("Job ID", key="power_add_job_id")
+
+            add_category = col3.selectbox(
+                "Category",
+                CATEGORY_OPTIONS,
+                key="power_add_category",
+            )
+
+            col4, col5 = st.columns(2)
+
+            add_job_status = col4.selectbox(
+                "Job status",
+                JOB_STATUS_OPTIONS,
+                key="power_add_job_status",
+            )
+
+            add_job_outcome = col5.selectbox(
+                "Job outcome",
+                JOB_OUTCOME_OPTIONS,
+                key="power_add_job_outcome",
+            )
+
+        with st.container(border=True):
+            st.markdown("### 🚗 Vehicle Details")
+
+            col1, col2 = st.columns(2)
+
+            add_vehicle_description = col1.text_input(
+                "Vehicle description",
+                key="power_add_vehicle_description",
+            )
+
+            add_vehicle_reg = col2.text_input(
+                "Vehicle reg",
+                key="power_add_vehicle_reg",
+            )
+
+        with st.container(border=True):
+            st.markdown("### 📍 Journey")
+
+            col1, col2 = st.columns(2)
+
+            add_collection_from = col1.text_input(
+                "Collection from",
+                key="power_add_collection_from",
+            )
+
+            add_delivery_to = col2.text_input(
+                "Delivery to",
+                key="power_add_delivery_to",
+            )
+
+        with st.container(border=True):
+            st.markdown("### 💰 Job Pay & Expenses")
+
+            add_amount = st.number_input(
+                "Amount (£)",
+                min_value=0.0,
+                step=0.01,
+                key="power_add_amount",
+            )
+
+            st.markdown("#### Expenses")
+
+            for i, expense in enumerate(st.session_state.power_add_expense_rows):
+                exp_col1, exp_col2, exp_col3 = st.columns([2, 1, 0.7])
+
+                expense_type = exp_col1.selectbox(
+                    f"Expense Type {i + 1}",
+                    EXPENSE_OPTIONS,
+                    index=safe_select_index(EXPENSE_OPTIONS, expense.get("type")),
+                    key=f"power_add_expense_type_{i}",
+                )
+
+                expense_amount = exp_col2.number_input(
+                    f"Amount {i + 1} (£)",
+                    min_value=0.0,
+                    value=float(expense.get("amount") or 0.0),
+                    step=0.5,
+                    key=f"power_add_expense_amount_{i}",
+                )
+
+                st.session_state.power_add_expense_rows[i] = {
+                    "type": expense_type,
+                    "amount": float(expense_amount),
+                }
+
+                with exp_col3:
+                    st.write("")
+                    st.write("")
+                    if len(st.session_state.power_add_expense_rows) > 1:
+                        if st.button("Remove", key=f"power_add_remove_expense_{i}"):
+                            st.session_state.power_add_expense_rows.pop(i)
+                            st.rerun()
+
+            if st.button("➕ Add Another Expense", key="power_add_add_expense"):
+                st.session_state.power_add_expense_rows.append(
+                    {"type": "No expenses", "amount": 0.0}
+                )
+                st.rerun()
+
+        add_job_expenses, add_expenses_amount, add_valid_expenses = build_expenses_from_rows(
+            st.session_state.power_add_expense_rows
         )
 
-        job_outcome = st.selectbox("Job outcome", JOB_OUTCOME_OPTIONS)
+        with st.container(border=True):
+            st.markdown("### ⏱ Waiting Time")
 
-        submitted = st.form_submit_button("Add job")
+            col1, col2, col3 = st.columns(3)
 
-        if submitted:
+            add_waiting_time = col1.text_input(
+                "Waiting time",
+                placeholder="e.g. 10-11 or 09:00-11:30",
+                key="power_add_waiting_time",
+            )
+
+            add_waiting_hours = parse_wait_range_to_hours(add_waiting_time)
+            add_waiting_amount = round(add_waiting_hours * WAITING_RATE, 2)
+
+            col2.metric("Waiting Hours", f"{add_waiting_hours:.2f}")
+            col3.metric("Waiting Amount", f"£{add_waiting_amount:.2f}")
+
+        with st.container(border=True):
+            st.markdown("### 📝 Extra Details")
+
+            col1, col2 = st.columns(2)
+
+            add_add_pay = col1.number_input(
+                "Additional pay (£)",
+                min_value=0.0,
+                step=0.01,
+                key="power_add_add_pay",
+            )
+
+            add_paid_date = col2.date_input(
+                "Paid date",
+                value=None,
+                format="YYYY-MM-DD",
+                key="power_add_paid_date",
+            )
+
+            add_auth_code = st.text_input(
+                "Auth code",
+                key="power_add_auth_code",
+            )
+
+            add_comments = st.text_area(
+                "Comments",
+                key="power_add_comments",
+            )
+
+    with right_col:
+        show_financial_summary(
+            add_amount,
+            add_waiting_amount,
+            add_add_pay,
+            add_expenses_amount,
+            add_valid_expenses,
+        )
+
+        submitted = st.button(
+            "💾 Add Job",
+            type="primary",
+            use_container_width=True,
+            key="power_add_submit",
+        )
+
+    if submitted:
+        missing_fields = []
+
+        if not clean_text(add_job_id):
+            missing_fields.append("Job ID")
+
+        if not clean_text(add_vehicle_description):
+            missing_fields.append("Vehicle description")
+
+        if float(add_amount) <= 0:
+            missing_fields.append("Amount")
+
+        if missing_fields:
+            st.error("Please complete these required fields: " + ", ".join(missing_fields))
+        else:
             payload = {
-                "work_date": str(work_date),
-                "job_id": job_id,
-                "category": category,
-                "job_status": job_status,
-                "amount": amount,
-                "waiting_time": waiting_time or None,
-                "waiting_hours": waiting_hours,
-                "waiting_amount": waiting_amount,
-                "vehicle_description": vehicle_description,
-                "vehicle_reg": vehicle_reg,
-                "collection_from": collection_from,
-                "delivery_to": delivery_to,
-                "job_expenses": job_expenses,
-                "expenses_amount": expenses_amount,
-                "auth_code": auth_code or None,
-                "comments": comments or None,
-                "add_pay": add_pay,
-                "paid_date": str(paid_date) if paid_date else None,
-                "job_outcome": job_outcome,
+                "work_date": str(add_work_date),
+                "job_id": add_job_id,
+                "category": add_category,
+                "job_status": add_job_status,
+                "amount": float(add_amount),
+                "waiting_time": add_waiting_time or None,
+                "waiting_hours": float(add_waiting_hours),
+                "waiting_amount": float(add_waiting_amount),
+                "vehicle_description": add_vehicle_description,
+                "vehicle_reg": add_vehicle_reg.upper().strip() if add_vehicle_reg else None,
+                "collection_from": add_collection_from,
+                "delivery_to": add_delivery_to,
+                "job_expenses": add_job_expenses,
+                "expenses_amount": float(add_expenses_amount),
+                "auth_code": add_auth_code or None,
+                "comments": add_comments or None,
+                "add_pay": float(add_add_pay),
+                "paid_date": str(add_paid_date) if add_paid_date else None,
+                "job_outcome": add_job_outcome,
             }
 
             res = api_post("/jobs", payload)
 
             if res.status_code in [200, 201]:
                 st.success("Job added successfully.")
+                st.session_state.power_add_expense_rows = [{"type": "No expenses", "amount": 0.0}]
                 st.rerun()
             else:
                 st.error(f"Add failed: {res.status_code} - {res.text}")
@@ -635,6 +1102,7 @@ with tab6:
             st.success(f"Yes, you have been to this postcode {total_visits} time(s).")
 
             col1, col2, col3 = st.columns(3)
+
             col1.metric("Times visited", total_visits)
             col2.metric("Last seen", str(last_seen))
             col3.metric("Different vehicles", vehicle_count)
