@@ -64,6 +64,12 @@ def api_error_message(response):
         return response.text
 
 
+if "expense_rows" not in st.session_state:
+    st.session_state.expense_rows = [
+        {"type": "No expenses", "amount": 0.0}
+    ]
+
+
 col1, col2, col3 = st.columns(3)
 
 work_date = col1.date_input("Date", value=date.today())
@@ -86,8 +92,72 @@ job_status = col9.selectbox("Job Status", cfg.STATUS_OPTIONS)
 
 col10, col11, col12 = st.columns(3)
 job_amount = col10.number_input("Job Amount (£)", min_value=0.0, step=1.0)
-job_expenses = col11.selectbox("Job Expenses", cfg.JOB_EXPENSE_OPTIONS)
-expenses_amount = col12.number_input("Expenses Amount (£)", min_value=0.0, step=0.5)
+
+with col11:
+    st.write("Job Expenses")
+
+    for i, expense in enumerate(st.session_state.expense_rows):
+        expense_type = st.selectbox(
+            f"Expense Type {i + 1}",
+            cfg.JOB_EXPENSE_OPTIONS,
+            index=cfg.JOB_EXPENSE_OPTIONS.index(expense["type"])
+            if expense["type"] in cfg.JOB_EXPENSE_OPTIONS
+            else 0,
+            key=f"expense_type_{i}",
+        )
+
+        expense_amount = st.number_input(
+            f"Expense Amount {i + 1} (£)",
+            min_value=0.0,
+            step=0.5,
+            value=float(expense.get("amount", 0.0)),
+            key=f"expense_amount_{i}",
+        )
+
+        st.session_state.expense_rows[i] = {
+            "type": expense_type,
+            "amount": float(expense_amount),
+        }
+
+        if len(st.session_state.expense_rows) > 1:
+            if st.button(f"Remove Expense {i + 1}", key=f"remove_expense_{i}"):
+                st.session_state.expense_rows.pop(i)
+                st.rerun()
+
+    if st.button("Add Another Expense"):
+        st.session_state.expense_rows.append(
+            {"type": "No expenses", "amount": 0.0}
+        )
+        st.rerun()
+
+
+valid_expenses = [
+    row
+    for row in st.session_state.expense_rows
+    if row["type"] != "No expenses" and float(row["amount"]) > 0
+]
+
+expenses_amount = round(
+    sum(float(row["amount"]) for row in valid_expenses),
+    2,
+)
+
+job_expenses = (
+    "; ".join(
+        f"{row['type']}: £{float(row['amount']):.2f}"
+        for row in valid_expenses
+    )
+    if valid_expenses
+    else "No expenses"
+)
+
+col12.number_input(
+    "Total Expenses Amount (£)",
+    min_value=0.0,
+    step=0.5,
+    value=float(expenses_amount),
+    disabled=True,
+)
 
 col13, col14, col15 = st.columns(3)
 waiting_time = col13.text_input("Waiting Time (e.g. 10-11 or 09:00-11:30)")
@@ -163,7 +233,7 @@ if save_clicked:
             "collection_from": clean_collection_from,
             "delivery_to": clean_delivery_to,
             "job_expenses": job_expenses,
-            "expenses_amount": float(expenses_amount) if expenses_amount is not None else 0.0,
+            "expenses_amount": float(expenses_amount),
             "auth_code": clean_auth_code,
             "comments": clean_comments,
             "add_pay": float(add_pay),
@@ -180,6 +250,9 @@ if save_clicked:
 
             if response.status_code in (200, 201):
                 st.success(f"Job {clean_job_number} saved via API ✅")
+                st.session_state.expense_rows = [
+                    {"type": "No expenses", "amount": 0.0}
+                ]
                 st.rerun()
             elif response.status_code == 400:
                 st.error("Validation failed.")
