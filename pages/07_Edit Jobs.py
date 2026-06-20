@@ -19,7 +19,7 @@ st.set_page_config(page_title=f"{cfg.APP_TITLE} - Edit Jobs", layout="wide")
 ensure_default_user(cfg)
 require_login()
 
-st.subheader("Edit Jobs (Form)")
+st.title("Edit Jobs")
 
 
 def parse_wait_range_to_hours(s: str) -> float:
@@ -169,14 +169,16 @@ def load_jobs_df(search: str = "") -> pd.DataFrame:
     return pd.DataFrame()
 
 
-left, right = st.columns([2, 3])
+search_col, select_col = st.columns([2, 3])
 
-job_search = left.text_input(
+job_search = search_col.text_input(
     "Search by Job Number / Vehicle Reg / Location / Comments / Auth Code",
     key="edit_job_search",
 )
 
-left.caption("Search uses the API directly, so older jobs can still be found without loading every record.")
+search_col.caption(
+    "Search uses the API directly, so older jobs can still be found without loading every record."
+)
 
 try:
     df = load_jobs_df(job_search).copy()
@@ -221,13 +223,12 @@ def label_row(r) -> str:
 
 rows = df.sort_values(by="id", ascending=False).to_dict("records")
 labels = [label_row(r) for r in rows]
-
 options = [None] + list(range(len(rows)))
 
 if st.session_state.edit_job_choice not in options:
     st.session_state.edit_job_choice = None
 
-choice = right.selectbox(
+choice = select_col.selectbox(
     "Select job to edit",
     options=options,
     index=options.index(st.session_state.edit_job_choice),
@@ -249,189 +250,269 @@ if st.session_state.edit_expense_row_id != row_id:
     )
     st.session_state.edit_expense_row_id = row_id
 
-st.caption(f"Selected Row ID: {row_id}")
-st.divider()
-
-col1, col2, col3 = st.columns(3)
-
-work_date = col1.date_input("Date", value=job.get("work_date") or date.today())
-job_number = col2.text_input("Job Number", value=str(job.get("job_id") or ""))
-job_type = col3.selectbox(
-    "Job Type",
-    cfg.JOB_TYPE_OPTIONS,
-    index=(
-        cfg.JOB_TYPE_OPTIONS.index(job.get("category"))
-        if job.get("category") in cfg.JOB_TYPE_OPTIONS
-        else 0
-    ),
+st.info(
+    f"Editing Row #{row_id} | "
+    f"Job: {job.get('job_id') or ''} | "
+    f"Vehicle: {job.get('vehicle_reg') or ''}"
 )
 
-col4, col5, col6 = st.columns(3)
-vehicle_description = col4.text_input(
-    "Vehicle Description",
-    value=str(job.get("vehicle_description") or ""),
-)
-vehicle_reg = col5.text_input(
-    "Vehicle Reg",
-    value=str(job.get("vehicle_reg") or ""),
-)
+left_col, right_col = st.columns([2.2, 1])
 
-current_outcome = str(job.get("job_outcome") or "Completed")
-if current_outcome not in OUTCOME_OPTIONS:
-    current_outcome = "Completed"
+with left_col:
+    with st.container(border=True):
+        st.markdown("### 📋 Job Information")
 
-job_outcome = col6.selectbox(
-    "Job Outcome",
-    OUTCOME_OPTIONS,
-    index=OUTCOME_OPTIONS.index(current_outcome),
-)
+        col1, col2, col3 = st.columns(3)
 
-col7, col8, col9 = st.columns(3)
-collection_from = col7.text_input(
-    "Collection From",
-    value=str(job.get("collection_from") or ""),
-)
-delivery_to = col8.text_input(
-    "Delivery To",
-    value=str(job.get("delivery_to") or ""),
-)
+        work_date = col1.date_input(
+            "Date",
+            value=job.get("work_date") or date.today(),
+        )
 
-current_status = str(job.get(STATUS_COL) or "Pending") if STATUS_COL else "Pending"
-job_status = col9.selectbox(
-    "Job Status",
-    cfg.STATUS_OPTIONS,
-    index=(
-        cfg.STATUS_OPTIONS.index(current_status)
-        if current_status in cfg.STATUS_OPTIONS
-        else 0
-    ),
-)
+        job_number = col2.text_input(
+            "Job Number",
+            value=str(job.get("job_id") or ""),
+        )
 
-col10, col11, col12 = st.columns(3)
-job_amount = col10.number_input(
-    "Job Amount (£)",
-    min_value=0.0,
-    step=1.0,
-    value=float(job.get("amount") or 0.0),
-)
-
-with col11:
-    st.write("Job Expenses")
-
-    for i, expense in enumerate(st.session_state.edit_expense_rows):
-        expense_type = st.selectbox(
-            f"Expense Type {i + 1}",
-            cfg.JOB_EXPENSE_OPTIONS,
+        job_type = col3.selectbox(
+            "Job Type",
+            cfg.JOB_TYPE_OPTIONS,
             index=(
-                cfg.JOB_EXPENSE_OPTIONS.index(expense.get("type"))
-                if expense.get("type") in cfg.JOB_EXPENSE_OPTIONS
+                cfg.JOB_TYPE_OPTIONS.index(job.get("category"))
+                if job.get("category") in cfg.JOB_TYPE_OPTIONS
                 else 0
             ),
-            key=f"edit_expense_type_{row_id}_{i}",
         )
 
-        expense_amount = st.number_input(
-            f"Expense Amount {i + 1} (£)",
+        col4, col5 = st.columns(2)
+
+        current_outcome = str(job.get("job_outcome") or "Completed")
+        if current_outcome not in OUTCOME_OPTIONS:
+            current_outcome = "Completed"
+
+        job_outcome = col4.selectbox(
+            "Job Outcome",
+            OUTCOME_OPTIONS,
+            index=OUTCOME_OPTIONS.index(current_outcome),
+        )
+
+        current_status = str(job.get(STATUS_COL) or "Pending") if STATUS_COL else "Pending"
+
+        job_status = col5.selectbox(
+            "Job Status",
+            cfg.STATUS_OPTIONS,
+            index=(
+                cfg.STATUS_OPTIONS.index(current_status)
+                if current_status in cfg.STATUS_OPTIONS
+                else 0
+            ),
+        )
+
+    with st.container(border=True):
+        st.markdown("### 🚗 Vehicle Details")
+
+        col1, col2 = st.columns(2)
+
+        vehicle_description = col1.text_input(
+            "Vehicle Description",
+            value=str(job.get("vehicle_description") or ""),
+        )
+
+        vehicle_reg = col2.text_input(
+            "Vehicle Reg",
+            value=str(job.get("vehicle_reg") or ""),
+        )
+
+    with st.container(border=True):
+        st.markdown("### 📍 Journey")
+
+        col1, col2 = st.columns(2)
+
+        collection_from = col1.text_input(
+            "Collection From",
+            value=str(job.get("collection_from") or ""),
+        )
+
+        delivery_to = col2.text_input(
+            "Delivery To",
+            value=str(job.get("delivery_to") or ""),
+        )
+
+    with st.container(border=True):
+        st.markdown("### 💰 Job Pay & Expenses")
+
+        job_amount = st.number_input(
+            "Job Amount (£)",
+            min_value=0.0,
+            step=1.0,
+            value=float(job.get("amount") or 0.0),
+        )
+
+        st.markdown("#### Expenses")
+
+        for i, expense in enumerate(st.session_state.edit_expense_rows):
+            exp_col1, exp_col2, exp_col3 = st.columns([2, 1, 0.7])
+
+            expense_type = exp_col1.selectbox(
+                f"Expense Type {i + 1}",
+                cfg.JOB_EXPENSE_OPTIONS,
+                index=(
+                    cfg.JOB_EXPENSE_OPTIONS.index(expense.get("type"))
+                    if expense.get("type") in cfg.JOB_EXPENSE_OPTIONS
+                    else 0
+                ),
+                key=f"edit_expense_type_{row_id}_{i}",
+            )
+
+            expense_amount = exp_col2.number_input(
+                f"Amount {i + 1} (£)",
+                min_value=0.0,
+                step=0.5,
+                value=float(expense.get("amount") or 0.0),
+                key=f"edit_expense_amount_{row_id}_{i}",
+            )
+
+            st.session_state.edit_expense_rows[i] = {
+                "type": expense_type,
+                "amount": float(expense_amount),
+            }
+
+            with exp_col3:
+                st.write("")
+                st.write("")
+                if len(st.session_state.edit_expense_rows) > 1:
+                    if st.button("Remove", key=f"edit_remove_expense_{row_id}_{i}"):
+                        st.session_state.edit_expense_rows.pop(i)
+                        st.rerun()
+
+        if st.button("➕ Add Another Expense", key=f"edit_add_expense_{row_id}"):
+            st.session_state.edit_expense_rows.append(
+                {"type": "No expenses", "amount": 0.0}
+            )
+            st.rerun()
+
+    job_expenses, expenses_amount = build_expenses_from_rows(
+        st.session_state.edit_expense_rows
+    )
+
+    with st.container(border=True):
+        st.markdown("### ⏱ Waiting Time")
+
+        col1, col2, col3 = st.columns(3)
+
+        waiting_time = col1.text_input(
+            "Waiting Time",
+            value=str(job.get("waiting_time") or ""),
+            placeholder="e.g. 10-11 or 09:00-11:30",
+        )
+
+        calc_waiting_hours = float(parse_wait_range_to_hours(waiting_time))
+
+        calc_waiting_amount = round(
+            float(calc_waiting_hours) * float(getattr(cfg, "WAITING_RATE", 0.0)),
+            2,
+        )
+
+        col2.metric("Waiting Hours", f"{calc_waiting_hours:.2f}")
+        col3.metric("Waiting Amount", f"£{calc_waiting_amount:.2f}")
+
+    with st.container(border=True):
+        st.markdown("### 📝 Extra Details")
+
+        col1, col2, col3 = st.columns(3)
+
+        add_pay_value = float(job.get("add_pay") or 0.0) if "add_pay" in df.columns else 0.0
+
+        add_pay = col1.number_input(
+            "Add Pay (£)",
+            min_value=0.0,
+            step=1.0,
+            value=add_pay_value,
+        )
+
+        hours = col2.number_input(
+            "Hours (if used)",
             min_value=0.0,
             step=0.5,
-            value=float(expense.get("amount") or 0.0),
-            key=f"edit_expense_amount_{row_id}_{i}",
+            value=float(job.get("hours") or 0.0) if "hours" in df.columns else 0.0,
+            disabled=("hours" not in df.columns),
+            help=None if "hours" in df.columns else "DB/API does not currently expose an hours field.",
         )
 
-        st.session_state.edit_expense_rows[i] = {
-            "type": expense_type,
-            "amount": float(expense_amount),
-        }
+        existing_paid_date = job.get("paid_date") if "paid_date" in df.columns else None
+        if pd.isna(existing_paid_date):
+            existing_paid_date = None
 
-        if len(st.session_state.edit_expense_rows) > 1:
-            if st.button(f"Remove Expense {i + 1}", key=f"edit_remove_expense_{row_id}_{i}"):
-                st.session_state.edit_expense_rows.pop(i)
-                st.rerun()
+        default_paid_date = existing_paid_date or date.today()
 
-    if st.button("Add Another Expense", key=f"edit_add_expense_{row_id}"):
-        st.session_state.edit_expense_rows.append(
-            {"type": "No expenses", "amount": 0.0}
+        paid_date = col3.date_input(
+            "Paid Date",
+            value=default_paid_date,
+            disabled=(("paid_date" not in df.columns) or (str(job_status).strip().lower() != "paid")),
+            help=(
+                "Auto-fills to today when status is Paid, but you can change it manually."
+                if "paid_date" in df.columns
+                else "DB/API does not currently expose a paid_date field."
+            ),
         )
-        st.rerun()
 
-job_expenses, expenses_amount = build_expenses_from_rows(st.session_state.edit_expense_rows)
+        auth_code = st.text_input(
+            "Auth Code",
+            value=str(job.get("auth_code") or ""),
+        )
 
-col12.number_input(
-    "Total Expenses Amount (£)",
-    min_value=0.0,
-    step=0.5,
-    value=float(expenses_amount),
-    disabled=True,
-)
+        comments = st.text_area(
+            "Comments",
+            value=str(job.get("comments") or ""),
+        )
 
-col13, col14, col15 = st.columns(3)
-waiting_time = col13.text_input(
-    "Waiting Time (e.g. 10-11 or 09:00-11:30)",
-    value=str(job.get("waiting_time") or ""),
-)
 
-calc_waiting_hours = float(parse_wait_range_to_hours(waiting_time))
-calc_waiting_amount = round(
-    float(calc_waiting_hours) * float(getattr(cfg, "WAITING_RATE", 0.0)),
+total_to_pay = round(
+    float(job_amount)
+    + float(calc_waiting_amount)
+    + float(add_pay)
+    - float(expenses_amount),
     2,
 )
 
-col14.number_input(
-    "Waiting Hours (auto)",
-    min_value=0.0,
-    step=0.5,
-    value=float(calc_waiting_hours),
-    disabled=True,
-)
+with right_col:
+    with st.container(border=True):
+        st.markdown("### 📊 Financial Summary")
 
-col15.number_input(
-    "Waiting Amount (£) (auto)",
-    min_value=0.0,
-    step=0.5,
-    value=float(calc_waiting_amount),
-    disabled=True,
-)
+        st.metric("Total To Pay", f"£{total_to_pay:.2f}")
 
-col16, col17, col18 = st.columns(3)
+        st.divider()
 
-add_pay_value = float(job.get("add_pay") or 0.0) if "add_pay" in df.columns else 0.0
-add_pay = col16.number_input(
-    "Add Pay (£)",
-    min_value=0.0,
-    step=1.0,
-    value=add_pay_value,
-)
+        st.write(f"**Job Amount:** £{float(job_amount):.2f}")
+        st.write(f"**Waiting Amount:** £{float(calc_waiting_amount):.2f}")
+        st.write(f"**Add Pay:** £{float(add_pay):.2f}")
+        st.write(f"**Expenses:** £{float(expenses_amount):.2f}")
 
-hours = col17.number_input(
-    "Hours (if used)",
-    min_value=0.0,
-    step=0.5,
-    value=float(job.get("hours") or 0.0) if "hours" in df.columns else 0.0,
-    disabled=("hours" not in df.columns),
-    help=None if "hours" in df.columns else "DB/API does not currently expose an hours field.",
-)
+        st.divider()
 
-existing_paid_date = job.get("paid_date") if "paid_date" in df.columns else None
-if pd.isna(existing_paid_date):
-    existing_paid_date = None
+        if st.session_state.edit_expense_rows:
+            valid_expense_rows = [
+                row
+                for row in st.session_state.edit_expense_rows
+                if row.get("type") != "No expenses"
+                and float(row.get("amount") or 0.0) > 0
+            ]
 
-default_paid_date = existing_paid_date or date.today()
+            if valid_expense_rows:
+                st.markdown("#### Expense Breakdown")
+                for row in valid_expense_rows:
+                    st.write(f"- {row['type']}: £{float(row['amount']):.2f}")
+            else:
+                st.caption("No expenses added.")
+        else:
+            st.caption("No expenses added.")
 
-paid_date = col18.date_input(
-    "Paid Date",
-    value=default_paid_date,
-    disabled=(("paid_date" not in df.columns) or (str(job_status).strip().lower() != "paid")),
-    help=(
-        "Auto-fills to today when status is Paid, but you can change it manually."
-        if "paid_date" in df.columns
-        else "DB/API does not currently expose a paid_date field."
-    ),
-)
+    submitted = st.button(
+        "💾 Update Job",
+        type="primary",
+        use_container_width=True,
+    )
 
-auth_code = st.text_input("Auth Code", value=str(job.get("auth_code") or ""))
-comments = st.text_area("Comments", value=str(job.get("comments") or ""))
-
-submitted = st.button("Save changes", type="primary")
 
 if submitted:
     diffs = {}
@@ -525,35 +606,38 @@ if submitted:
     else:
         st.info("No changes detected.")
 
+
 st.divider()
 
-st.markdown("### Delete Selected Job")
-st.error("This permanently deletes the selected job from the database.")
+with st.container(border=True):
+    st.markdown("### 🗑 Danger Zone")
 
-delete_confirm = st.checkbox(f"I confirm I want to delete job row #{row_id}")
+    st.error("This permanently deletes the selected job from the database.")
 
-if st.button("Delete selected job"):
-    if not delete_confirm:
-        st.warning("Tick the confirmation box before deleting.")
-    else:
-        try:
-            response = requests.delete(
-                f"{API_URL}/jobs/row/{row_id}",
-                headers={"x-api-key": API_KEY},
-                timeout=20,
-            )
+    delete_confirm = st.checkbox(f"I confirm I want to delete job row #{row_id}")
 
-            if response.status_code == 200:
-                st.session_state.clear_edit_form_after_save = True
-                st.success(f"Job row #{row_id} deleted successfully via API.")
-                st.rerun()
-            else:
-                st.error(f"API delete failed: {response.status_code}")
-                st.write(api_error_message(response))
+    if st.button("Delete selected job"):
+        if not delete_confirm:
+            st.warning("Tick the confirmation box before deleting.")
+        else:
+            try:
+                response = requests.delete(
+                    f"{API_URL}/jobs/row/{row_id}",
+                    headers={"x-api-key": API_KEY},
+                    timeout=20,
+                )
 
-        except requests.exceptions.ConnectionError:
-            st.error(f"Could not connect to API at {API_URL}")
-        except requests.exceptions.Timeout:
-            st.error("API request timed out.")
-        except Exception as e:
-            st.error(f"Delete failed: {e}")
+                if response.status_code == 200:
+                    st.session_state.clear_edit_form_after_save = True
+                    st.success(f"Job row #{row_id} deleted successfully via API.")
+                    st.rerun()
+                else:
+                    st.error(f"API delete failed: {response.status_code}")
+                    st.write(api_error_message(response))
+
+            except requests.exceptions.ConnectionError:
+                st.error(f"Could not connect to API at {API_URL}")
+            except requests.exceptions.Timeout:
+                st.error("API request timed out.")
+            except Exception as e:
+                st.error(f"Delete failed: {e}")
