@@ -31,24 +31,22 @@ def normalise_postcode(value: str) -> str:
     return text
 
 
-def time_since_visit(last_date) -> str:
-    if pd.isna(last_date):
+def time_since_visit(visit_date) -> str:
+    if pd.isna(visit_date):
         return "N/A"
 
     today = pd.Timestamp(date.today())
-    last_date = pd.to_datetime(last_date, errors="coerce")
+    visit_date = pd.to_datetime(visit_date, errors="coerce")
 
-    if pd.isna(last_date):
+    if pd.isna(visit_date):
         return "N/A"
 
-    last_date = last_date.normalize()
+    visit_date = visit_date.normalize()
 
-    # If the stored job date is ahead of today's system date,
-    # avoid showing a confusing "Future date" message.
-    if last_date > today:
+    if visit_date > today:
         return "Today"
 
-    total_days = int((today - last_date).days)
+    total_days = int((today - visit_date).days)
 
     if total_days == 0:
         return "Today"
@@ -113,6 +111,15 @@ def find_postcode_matches(df: pd.DataFrame, postcode: str) -> pd.DataFrame:
     return matches
 
 
+def get_visit_dates(matches: pd.DataFrame):
+    if "work_date" not in matches.columns:
+        return []
+
+    valid_dates = matches["work_date"].dropna().sort_values(ascending=False)
+
+    return list(valid_dates)
+
+
 df = DB["read_all"]().copy()
 
 if df.empty:
@@ -136,13 +143,22 @@ if matches.empty:
 
 times_visited = len(matches)
 
+visit_dates = get_visit_dates(matches)
+
 last_visited = "N/A"
 time_since_last_visit = "N/A"
+previous_visited = "N/A"
+time_since_previous_visit = "N/A"
 
-if "work_date" in matches.columns and matches["work_date"].notna().any():
-    last_date = matches["work_date"].dropna().iloc[0]
+if len(visit_dates) >= 1:
+    last_date = visit_dates[0]
     last_visited = last_date.strftime("%Y-%m-%d")
     time_since_last_visit = time_since_visit(last_date)
+
+if len(visit_dates) >= 2:
+    previous_date = visit_dates[1]
+    previous_visited = previous_date.strftime("%Y-%m-%d")
+    time_since_previous_visit = time_since_visit(previous_date)
 
 
 last_vehicle = "N/A"
@@ -181,13 +197,17 @@ if comment_col:
         last_comment = vals.iloc[0]
 
 
-m1, m2, m3, m4, m5 = st.columns(5)
+m1, m2, m3, m4, m5, m6 = st.columns(6)
 
 m1.metric("Times Visited", times_visited)
 m2.metric("Last Visited", last_visited)
-m3.metric("Time Since Last Visit", time_since_last_visit)
-m4.metric("Last Vehicle", last_vehicle)
-m5.metric("Last Job Type", last_job_type)
+m3.metric("Last Seen", time_since_last_visit)
+m4.metric("Previous Visit", time_since_previous_visit)
+m5.metric("Last Vehicle", last_vehicle)
+m6.metric("Last Job Type", last_job_type)
+
+if previous_visited != "N/A":
+    st.caption(f"Previous visit date: {previous_visited}")
 
 if last_comment != "N/A":
     st.caption(f"Last note: {last_comment}")
