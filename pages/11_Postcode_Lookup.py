@@ -43,8 +43,10 @@ def time_since_visit(last_date) -> str:
 
     last_date = last_date.normalize()
 
+    # If the stored job date is ahead of today's system date,
+    # avoid showing a confusing "Future date" message.
     if last_date > today:
-        return "Future date"
+        return "Today"
 
     total_days = int((today - last_date).days)
 
