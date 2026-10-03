@@ -1,3 +1,4 @@
+import hmac
 import logging
 import os
 from typing import Optional
@@ -24,6 +25,7 @@ app.add_middleware(SlowAPIMiddleware)
 logger = logging.getLogger("worklog.security")
 
 API_KEY = os.getenv("WORKLOG_API_KEY") or os.getenv("API_KEY")
+CEVA_READ_API_KEY = os.getenv("WORKLOG_CEVA_READ_API_KEY")
 
 
 @app.middleware("http")
@@ -64,6 +66,28 @@ def verify_api_key(x_api_key: str | None = Header(default=None)):
         )
 
 
+def verify_ceva_read_api_key(x_api_key: str | None = Header(default=None)):
+    """Authenticate CEVA with its separate, read-only API key."""
+    if not CEVA_READ_API_KEY:
+        logger.error("CEVA read-only API key is not configured")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="CEVA vehicle-history integration is not configured",
+        )
+
+    if not x_api_key:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Missing API key",
+        )
+
+    if not hmac.compare_digest(x_api_key, CEVA_READ_API_KEY):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Unauthorized access attempt",
+        )
+
+
 @app.get("/")
 def root():
     return {"message": "Worklog API is running"}
@@ -72,6 +96,40 @@ def root():
 @app.get("/health")
 def health():
     return {"status": "ok"}
+
+
+@app.get("/integration/ceva/vehicle-history")
+@limiter.limit("30/minute")
+def get_ceva_vehicle_history(
+    request: Request,
+    x_api_key: str | None = Header(default=None),
+):
+    """Return only the BCA vehicle and location fields CEVA needs."""
+    verify_ceva_read_api_key(x_api_key)
+
+    try:
+        result = services.list_jobs(all_records=True)
+        rows = result.get("data", []) if isinstance(result, dict) else []
+        data = [
+            {
+                "id": row.get("id"),
+                "work_date": row.get("work_date"),
+                "vehicle_description": row.get("vehicle_description") or "",
+                "vehicle_reg": row.get("vehicle_reg") or "",
+                "collection_from": row.get("collection_from") or "",
+                "delivery_to": row.get("delivery_to") or "",
+            }
+            for row in rows
+        ]
+        return {"data": data, "count": len(data)}
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("Could not read BCA vehicle history for CEVA")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Could not read BCA vehicle history",
+        ) from exc
 
 
 @app.get("/jobs")

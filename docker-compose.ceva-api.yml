@@ -1,0 +1,20 @@
+services:
+  ceva-bca-api:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    image: worklog-ceva-api
+    container_name: ceva-bca-api
+    environment:
+      WORKLOG_DB_PATH: /data/worklog.db
+      WORKLOG_CEVA_READ_API_KEY: ${WORKLOG_CEVA_READ_API_KEY:?Add it to .env.ceva-api}
+    volumes:
+      - /var/lib/worklog:/data
+    networks:
+      - worklog_proxy
+    restart: unless-stopped
+
+networks:
+  worklog_proxy:
+    external: true
+    name: worklog_default
