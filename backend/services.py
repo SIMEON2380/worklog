@@ -1,7 +1,5 @@
 from typing import Optional, List, Any
-
 from fastapi import HTTPException
-
 from .db import get_connection
 
 
@@ -39,27 +37,22 @@ def _rows_to_dicts(cur, rows) -> List[dict]:
 
 
 def _run_select(query: str, params: Optional[List[Any]] = None, one: bool = False):
-    conn = get_connection()
+    conn = get_connection(read_only=True)
     cur = conn.cursor()
-
     try:
         cur.execute(query, params or [])
-
         if one:
             row = cur.fetchone()
             if not row:
                 return None
             columns = [col[0] for col in cur.description]
             return dict(zip(columns, row))
-
         rows = cur.fetchall()
         return _rows_to_dicts(cur, rows)
-
     except HTTPException:
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-
     finally:
         conn.close()
 
@@ -84,27 +77,21 @@ def list_jobs(
     if work_date:
         where_clauses.append("work_date = ?")
         params.append(work_date)
-
     if job_status:
         where_clauses.append("COALESCE(job_status, status) = ?")
         params.append(job_status)
-
     if job_outcome:
         where_clauses.append("job_outcome = ?")
         params.append(job_outcome)
-
     if category:
         where_clauses.append("category = ?")
         params.append(category)
-
     if start_date:
         where_clauses.append("work_date >= ?")
         params.append(start_date)
-
     if end_date:
         where_clauses.append("work_date <= ?")
         params.append(end_date)
-
     if search:
         where_clauses.append(
             """(
@@ -148,14 +135,12 @@ def list_jobs(
     # Default paginated mode
     if page < 1:
         page = 1
-
     if page_size < 1:
         page_size = 50
 
     offset = (page - 1) * page_size
     paginated_query = query + " LIMIT ? OFFSET ?"
     paginated_params = params + [page_size, offset]
-
     data = _run_select(paginated_query, paginated_params, one=False)
 
     return {
@@ -173,26 +158,21 @@ def get_job_by_id(job_id: str) -> dict:
         + " WHERE CAST(job_id AS TEXT) = ? ORDER BY work_date DESC, id DESC LIMIT 1"
     )
     result = _run_select(query, [str(job_id)], one=True)
-
     if not result:
         raise HTTPException(status_code=404, detail="Job not found")
-
     return result
 
 
 def get_job_by_row_id(row_id: int) -> dict:
     query = NORMALIZED_SELECT + " WHERE id = ? LIMIT 1"
     result = _run_select(query, [row_id], one=True)
-
     if not result:
         raise HTTPException(status_code=404, detail="Job row not found")
-
     return result
 
 
 def create_job_record(job) -> dict:
     data = job.model_dump(exclude_unset=True)
-
     field_map = {
         "work_date": "work_date",
         "job_id": "job_id",
@@ -216,7 +196,6 @@ def create_job_record(job) -> dict:
         "description": "description",
         "hours": "hours",
     }
-
     insert_data = {}
     for api_field, db_field in field_map.items():
         if api_field in data:
@@ -228,10 +207,8 @@ def create_job_record(job) -> dict:
     columns = ", ".join(insert_data.keys())
     placeholders = ", ".join(["?"] * len(insert_data))
     values = list(insert_data.values())
-
     conn = get_connection()
     cur = conn.cursor()
-
     try:
         cur.execute(
             f"INSERT INTO work_logs ({columns}) VALUES ({placeholders})",
@@ -239,10 +216,8 @@ def create_job_record(job) -> dict:
         )
         conn.commit()
         row_id = cur.lastrowid
-
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-
     finally:
         conn.close()
 
@@ -254,7 +229,6 @@ def create_job_record(job) -> dict:
 
 def update_job_record(job_id: str, job) -> dict:
     data = job.model_dump(exclude_unset=True)
-
     field_map = {
         "work_date": "work_date",
         "job_id": "job_id",
@@ -278,7 +252,6 @@ def update_job_record(job_id: str, job) -> dict:
         "description": "description",
         "hours": "hours",
     }
-
     update_data = {}
     for api_field, db_field in field_map.items():
         if api_field in data:
@@ -290,25 +263,20 @@ def update_job_record(job_id: str, job) -> dict:
     set_clause = ", ".join([f"{col} = ?" for col in update_data.keys()])
     values = list(update_data.values())
     values.append(str(job_id))
-
     conn = get_connection()
     cur = conn.cursor()
-
     try:
         cur.execute(
             f"UPDATE work_logs SET {set_clause} WHERE CAST(job_id AS TEXT) = ?",
             values,
         )
         conn.commit()
-
         if cur.rowcount == 0:
             raise HTTPException(status_code=404, detail="Job not found")
-
     except HTTPException:
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-
     finally:
         conn.close()
 
@@ -317,7 +285,6 @@ def update_job_record(job_id: str, job) -> dict:
 
 def update_job_row_record(row_id: int, job) -> dict:
     data = job.model_dump(exclude_unset=True)
-
     field_map = {
         "work_date": "work_date",
         "job_id": "job_id",
@@ -341,7 +308,6 @@ def update_job_row_record(row_id: int, job) -> dict:
         "description": "description",
         "hours": "hours",
     }
-
     update_data = {}
     for api_field, db_field in field_map.items():
         if api_field in data:
@@ -353,25 +319,20 @@ def update_job_row_record(row_id: int, job) -> dict:
     set_clause = ", ".join([f"{col} = ?" for col in update_data.keys()])
     values = list(update_data.values())
     values.append(row_id)
-
     conn = get_connection()
     cur = conn.cursor()
-
     try:
         cur.execute(
             f"UPDATE work_logs SET {set_clause} WHERE id = ?",
             values,
         )
         conn.commit()
-
         if cur.rowcount == 0:
             raise HTTPException(status_code=404, detail="Job row not found")
-
     except HTTPException:
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-
     finally:
         conn.close()
 
@@ -381,19 +342,15 @@ def update_job_row_record(row_id: int, job) -> dict:
 def delete_job_record(job_id: str) -> dict:
     conn = get_connection()
     cur = conn.cursor()
-
     try:
         cur.execute("DELETE FROM work_logs WHERE CAST(job_id AS TEXT) = ?", [str(job_id)])
         conn.commit()
-
         if cur.rowcount == 0:
             raise HTTPException(status_code=404, detail="Job not found")
-
     except HTTPException:
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-
     finally:
         conn.close()
 
@@ -403,19 +360,15 @@ def delete_job_record(job_id: str) -> dict:
 def delete_job_row_record(row_id: int) -> dict:
     conn = get_connection()
     cur = conn.cursor()
-
     try:
         cur.execute("DELETE FROM work_logs WHERE id = ?", [row_id])
         conn.commit()
-
         if cur.rowcount == 0:
             raise HTTPException(status_code=404, detail="Job row not found")
-
     except HTTPException:
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-
     finally:
         conn.close()
 
