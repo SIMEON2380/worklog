@@ -9,7 +9,7 @@ services:
       WORKLOG_DB_PATH: /data/worklog.db
       WORKLOG_CEVA_READ_API_KEY: ${WORKLOG_CEVA_READ_API_KEY:?Add it to .env.ceva-api}
     volumes:
-      - /var/lib/worklog:/data
+      - /var/lib/worklog:/data:ro
     networks:
       - worklog_proxy
     restart: unless-stopped
